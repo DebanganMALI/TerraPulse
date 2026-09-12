@@ -1,0 +1,46 @@
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# env & secrets
+.env
+.env.local
+*.pem
+*.key
+
+# data & models
+data/scenes/**/*.tif
+data/scenes/**/*.tiff
+data/scenes/**/*.jp2
+data/models/*.joblib
+backend/app/static/overlays/**/*.png
+
+# keep structure + metadata
+!data/scenes/**/meta.json
+!data/env/*.csv
+!**/.gitkeep
+
+# db
+*.db
+*.sqlite3
+
+# node
+node_modules/
+dist/
+.vite/
+
+# editors / tooling
+.vscode/
+.idea/
+.antigravity/
+.aider*
+.cursor/
+.claude/
+*.log
+.DS_Store
+Thumbs.db

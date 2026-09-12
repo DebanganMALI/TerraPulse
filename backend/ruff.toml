@@ -1,0 +1,10 @@
+line-length = 100
+
+[lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+# Query/Depends in argument defaults is the FastAPI idiom
+ignore = ["B008"]
+
+[lint.per-file-ignores]
+# conftest must set env vars before the app package is imported
+"tests/conftest.py" = ["E402"]
