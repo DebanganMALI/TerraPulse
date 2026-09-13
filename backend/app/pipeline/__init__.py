@@ -1,137 +1,137 @@
-"""Geospatial + ML pipeline. Owned by Part B.
+"""Real geospatial + ML pipeline. Owned by Part B.
 
-The only seam with the rest of the app:
+Reached through one function:
 
     run_analysis(req: AnalysisRequest, on_progress=None) -> AnalysisResult
 
-Rules: never raise for a recoverable problem - degrade and append to
-result.warnings. Call on_progress at each stage. Do not import app.api,
-app.db or app.services.
+It never raises for a recoverable problem. Every stage is wrapped: a failure
+degrades that stage to an empty result, appends to warnings, and the run
+continues. A thin-but-valid AnalysisResult always beats an exception, because
+an exception on stage is a dead demo.
 """
+
+from __future__ import annotations
 
 import logging
 from collections.abc import Callable
 
-import shapely.geometry
+from app.schemas.analysis import AnalysisRequest, AnalysisResult
 
-from app.pipeline import classify as classify_mod
-from app.pipeline import detect, indices, render, risk, vectorize
-from app.pipeline.align import align
-from app.pipeline.providers.local import LocalProvider
-from app.pipeline.providers.sentinel import SentinelProvider
-from app.schemas.analysis import (
-    AnalysisRequest,
-    AnalysisResult,
-    DetectedEvent,
-)
-from app.schemas.common import EventType, Geometry, Provider
+log = logging.getLogger("terrapulse.pipeline")
 
-log = logging.getLogger("terrapulse")
-
-PROVIDERS = {
-    Provider.local: LocalProvider(),
-    Provider.sentinel: SentinelProvider(),
-}
+MIN_AREA_KM2 = 0.25
+MAX_EVENTS = 80
 
 
 def run_analysis(
     req: AnalysisRequest,
     on_progress: Callable[[int, str], None] | None = None,
 ) -> AnalysisResult:
-    warnings: list[str] = []
-    events: list[DetectedEvent] = []
-    cells: list = []
-    overlays: dict[str, str] = {}
-    model_info: dict[str, str] = {}
+    from . import classify as classify_mod
+    from . import detect, indices, render
+    from . import risk as risk_mod
+    from .align import align
+    from .providers import PROVIDERS
+    from .vectorize import to_polygons
 
     def p(pct: int, stage: str) -> None:
         if on_progress:
-            on_progress(pct, stage)
+            try:
+                on_progress(pct, stage)
+            except Exception:
+                pass
 
-    p(8, "loading scenes")
+    warnings: list[str] = []
+    events = []
+    cells = []
+    overlays: dict[str, str] = {}
+    model_info: dict[str, str] = {}
+
+    p(5, "loading scenes")
+    provider = PROVIDERS.get(req.provider.value) or PROVIDERS["local"]
     try:
-        bundle = PROVIDERS[req.provider].load(req.aoi_id)
+        bundle = provider.load(req.aoi_id)
     except Exception as exc:
         log.exception("scene load failed for %s", req.aoi_id)
+        p(100, "failed")
         return AnalysisResult(
             aoi_id=req.aoi_id,
             job_id=req.job_id,
-            warnings=[f"could not load scenes: {type(exc).__name__}: {exc}"],
+            warnings=[f"could not load scenes for {req.aoi_id}: {type(exc).__name__}: {exc}"],
+            model_info={"pipeline": "real", "status": "no imagery"},
         )
 
-    p(20, "aligning rasters")
+    p(20, "aligning scenes")
     try:
         bundle = align(bundle)
     except Exception as exc:
-        warnings.append(f"alignment skipped: {exc}")
+        warnings.append(f"alignment failed ({type(exc).__name__}); using the scenes as-is")
 
     p(35, "computing indices")
-    before_idx = indices.compute(bundle, "before")
-    after_idx = indices.compute(bundle, "after")
-    deltas = detect.deltas_of(before_idx, after_idx)
-
-    p(48, "masking cloud")
     try:
-        cloud = indices.cloud_mask(bundle, "before") | indices.cloud_mask(bundle, "after")
-        fraction = float(cloud.mean())
-        if fraction > 0.02:
-            warnings.append(f"{fraction:.1%} of pixels excluded as cloud")
-        if fraction > 0.35:
-            warnings.append("heavy cloud cover: detection may be unreliable")
-    except Exception:
-        cloud = None
-
-    p(58, "detecting change")
-    mask = detect.detect_change(deltas, exclude=cloud)
-    if not mask.any():
-        warnings.append("no change detected above threshold; check detect.THRESHOLDS")
-
-    p(70, "vectorizing regions")
-    regions = vectorize.to_regions(mask, bundle.transform, deltas, before_idx)
-    if len(regions) > 150:
-        warnings.append(f"{len(regions)} regions; raise vectorize.MIN_AREA_KM2")
-        regions = regions[:150]
-
-    p(82, "classifying regions")
-    labels, model_info = classify_mod.classify(regions)
-
-    for region, (etype, confidence) in zip(regions, labels, strict=False):
-        if etype is EventType.no_change:
-            continue
-        events.append(
-            DetectedEvent(
-                event_type=etype,
-                confidence=round(confidence, 3),
-                area_km2=region.area_km2,
-                centroid=region.centroid,
-                geometry=Geometry.model_validate(
-                    shapely.geometry.mapping(region.geometry)
-                ),
-                deltas={k: round(v, 4) for k, v in region.deltas.items()},
-            )
-        )
-
-    p(90, "scoring risk")
-    try:
-        cells = risk.score_grid(
-            shape=mask.shape,
-            transform=bundle.transform,
-            deltas=deltas,
-            before_idx=before_idx,
-            mask=mask,
-            regions=regions,
-            labels=labels,
+        before_idx = indices.compute(bundle.before, bundle.band_map)
+        after_idx = indices.compute(bundle.after, bundle.band_map)
+    except Exception as exc:
+        log.exception("indices failed")
+        p(100, "failed")
+        return AnalysisResult(
             aoi_id=req.aoi_id,
+            job_id=req.job_id,
+            warnings=[f"index computation failed: {type(exc).__name__}: {exc}"],
+            model_info={"pipeline": "real", "status": "indices failed"},
         )
-    except Exception as exc:
-        log.exception("risk scoring failed")
-        warnings.append(f"risk layer unavailable: {exc}")
 
-    p(96, "rendering overlays")
+    p(50, "detecting change")
+    mask = None
+    deltas: dict = {}
     try:
-        overlays = render.render_all(bundle, mask, req.aoi_id)
+        cloud = detect.cloud_mask(bundle.after, bundle.band_map)
+        if cloud is not None:
+            frac = float(cloud.mean())
+            if frac > 0.02:
+                warnings.append(f"cloud masked {frac:.1%} of the after scene")
+        mask, deltas = detect.detect_change(before_idx, after_idx, exclude=cloud)
     except Exception as exc:
-        warnings.append(f"overlays unavailable: {exc}")
+        warnings.append(f"change detection failed ({type(exc).__name__}); no events reported")
+
+    p(65, "vectorizing regions")
+    regions = []
+    if mask is not None:
+        try:
+            regions = to_polygons(
+                mask, bundle.transform, deltas, before_idx, min_area_km2=MIN_AREA_KM2
+            )
+            if not regions:
+                warnings.append("no regions above the minimum area; thresholds may be too high")
+        except Exception as exc:
+            warnings.append(f"vectorization failed ({type(exc).__name__}); no events reported")
+
+    p(78, "classifying regions")
+    try:
+        events = classify_mod.classify(regions, warnings)[:MAX_EVENTS]
+        model_info.update(classify_mod.model_info())
+    except Exception as exc:
+        warnings.append(f"classification failed ({type(exc).__name__}); no events reported")
+
+    p(88, "scoring risk")
+    if mask is not None:
+        try:
+            cells = risk_mod.score_risk(bundle, events, deltas, before_idx, mask, warnings)
+            model_info.update(risk_mod.model_info())
+        except Exception as exc:
+            log.exception("risk scoring failed")
+            warnings.append(f"risk scoring failed ({type(exc).__name__}); risk layer is empty")
+
+    p(95, "rendering overlays")
+    if mask is not None:
+        try:
+            overlays = render.render_all(req.aoi_id, bundle, mask, events, warnings)
+        except Exception as exc:
+            warnings.append(f"overlay rendering failed ({type(exc).__name__})")
+
+    model_info.setdefault("pipeline", "real")
+    model_info["scenes"] = f"{bundle.meta.get('before_date')} -> {bundle.meta.get('after_date')}"
+    model_info["reflectance_scale"] = str(bundle.meta.get("reflectance_scale", "auto"))
 
     p(100, "done")
     return AnalysisResult(
@@ -143,3 +143,6 @@ def run_analysis(
         model_info=model_info,
         warnings=warnings,
     )
+
+
+__all__ = ["run_analysis"]

@@ -1,42 +1,80 @@
+from __future__ import annotations
+
 import json
+from pathlib import Path
 
 import numpy as np
 import rasterio
 
 from app.config import settings
-from app.pipeline.providers.base import SceneBundle
 from app.security.paths import safe_join
 
-# Sentinel-2 L2A digital numbers are reflectance x 10000
-DN_SCALE = 10_000.0
+from .base import SceneBundle
 
-DEFAULT_BANDS = {"blue": 1, "green": 2, "red": 3, "nir": 4, "swir": 5}
+# Two different scalings turn up depending on where the GeoTIFF came from:
+# a raw L2A product stores reflectance * 10000, while Sentinel Hub's 16-bit
+# export stores reflectance * 65535. Guessing wrong silently flattens every
+# bright pixel and makes all four index thresholds meaningless, so detect it
+# from the data and let meta.json override with "reflectance_scale".
+SCALE_L2A = 10000.0
+SCALE_SH16 = 65535.0
+SCALE_SWITCH = 20000.0
+
+DEFAULT_BAND_MAP = {"blue": 1, "green": 2, "red": 3, "nir": 4, "swir": 5}
+
+
+def scene_dir(aoi_id: str) -> Path:
+    return safe_join(settings().scenes_dir, aoi_id)
+
+
+def read_meta(aoi_id: str) -> dict:
+    path = safe_join(scene_dir(aoi_id), "meta.json")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _read_raw(path: Path):
+    with rasterio.open(path) as src:
+        return src.read().astype("float32"), src.transform, src.crs
+
+
+def reflectance_scale(meta: dict, *arrays: np.ndarray) -> float:
+    override = meta.get("reflectance_scale")
+    if override:
+        return float(override)
+    peak = max(float(np.nanmax(a)) for a in arrays)
+    if peak <= 1.5:
+        return 1.0
+    return SCALE_SH16 if peak > SCALE_SWITCH else SCALE_L2A
 
 
 class LocalProvider:
-    """Reads the before/after pair written by scripts/stack.py."""
-
     def load(self, aoi_id: str) -> SceneBundle:
-        folder = safe_join(settings().scenes_dir, aoi_id)
+        meta = read_meta(aoi_id)
+        d = scene_dir(aoi_id)
 
-        meta_path = folder / "meta.json"
-        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
-        band_map = meta.get("band_map") or DEFAULT_BANDS
+        before, bt, bcrs = _read_raw(safe_join(d, "before.tif"))
+        after, at, acrs = _read_raw(safe_join(d, "after.tif"))
 
-        arrays = {}
-        profile = None
-        for which in ("before", "after"):
-            with rasterio.open(folder / f"{which}.tif") as src:
-                arrays[which] = np.clip(src.read().astype("float32") / DN_SCALE, 0, 1.5)
-                if profile is None:
-                    profile = (src.transform, src.crs)
+        # one scale for both scenes: a per-scene guess could differ and would
+        # make the deltas nonsense
+        scale = reflectance_scale(meta, before, after)
+        for arr in (before, after):
+            arr /= scale
+            np.clip(arr, 0.0, 1.0, out=arr)
 
-        transform, crs = profile
+        same_grid = (
+            bcrs == acrs
+            and bt.almost_equals(at)
+            and before.shape[1:] == after.shape[1:]
+        )
+
         return SceneBundle(
-            before=arrays["before"],
-            after=arrays["after"],
-            transform=transform,
-            crs=crs,
-            band_map=band_map,
-            meta=meta,
+            before=before,
+            after=after,
+            transform=bt,
+            crs=bcrs,
+            band_map=meta.get("band_map") or DEFAULT_BAND_MAP,
+            meta={**meta, "reflectance_scale": scale},
+            after_transform=None if same_grid else at,
+            after_crs=None if same_grid else acrs,
         )

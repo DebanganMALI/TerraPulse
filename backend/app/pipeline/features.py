@@ -1,19 +1,23 @@
+from __future__ import annotations
+
 import math
 
-import numpy as np
+from app.schemas.common import EventType
 
-from app.pipeline.vectorize import Region
+from .vectorize import Region
 
-# Fixed order. Training and inference must read features in the same order or
-# the model produces confident nonsense - the saved artifact carries this list
-# and classify.py asserts it matches.
-FEATURES: list[str] = [
+# Fixed order. Training and inference reading these in different orders is a
+# silent failure that produces confident nonsense, so it lives in one place and
+# is saved inside the model artifact.
+FEATURES = [
     "d_ndwi",
     "d_ndvi",
     "d_nbr",
     "d_ndbi",
-    "before_ndwi",
+    "d_ndwi_std",
+    "d_ndvi_std",
     "before_ndvi",
+    "before_ndwi",
     "before_ndbi",
     "area_km2",
     "compactness",
@@ -21,35 +25,60 @@ FEATURES: list[str] = [
 ]
 
 
-def _compactness(region: Region) -> float:
-    p = region.geometry.length
-    return float(4 * math.pi * region.geometry.area / (p * p)) if p else 0.0
+def _f(v: float | None) -> float:
+    return 0.0 if v is None else float(v)
 
 
-def _elongation(region: Region) -> float:
-    minx, miny, maxx, maxy = region.geometry.bounds
-    w, h = maxx - minx, maxy - miny
-    return float(max(w, h) / min(w, h)) if min(w, h) > 0 else 1.0
+def shape_metrics(poly) -> tuple[float, float]:
+    # compactness and elongation carry real signal: floods follow valleys and are
+    # elongated, urban expansion is blocky, deforestation patches are ragged
+    area = poly.area
+    perim = poly.length
+    compactness = (4 * math.pi * area / (perim * perim)) if perim > 0 else 0.0
+    min_lon, min_lat, max_lon, max_lat = poly.bounds
+    w, h = max_lon - min_lon, max_lat - min_lat
+    elongation = (max(w, h) / min(w, h)) if min(w, h) > 0 else 1.0
+    return round(compactness, 4), round(min(elongation, 20.0), 4)
 
 
-def vector(region: Region) -> dict[str, float]:
-    """Shape carries real signal: floods follow valleys and are elongated,
-    urban expansion is blocky, forest loss is irregular."""
+def row(region: Region) -> dict[str, float]:
+    compactness, elongation = shape_metrics(region.geometry)
     return {
-        "d_ndwi": region.deltas.get("ndwi", 0.0),
-        "d_ndvi": region.deltas.get("ndvi", 0.0),
-        "d_nbr": region.deltas.get("nbr", 0.0),
-        "d_ndbi": region.deltas.get("ndbi", 0.0),
-        "before_ndwi": region.before.get("ndwi", 0.0),
-        "before_ndvi": region.before.get("ndvi", 0.0),
-        "before_ndbi": region.before.get("ndbi", 0.0),
-        "area_km2": region.area_km2,
-        "compactness": _compactness(region),
-        "elongation": _elongation(region),
+        "d_ndwi": _f(region.deltas.get("ndwi")),
+        "d_ndvi": _f(region.deltas.get("ndvi")),
+        "d_nbr": _f(region.deltas.get("nbr")),
+        "d_ndbi": _f(region.deltas.get("ndbi")),
+        "d_ndwi_std": _f(region.delta_std.get("ndwi")),
+        "d_ndvi_std": _f(region.delta_std.get("ndvi")),
+        "before_ndvi": _f(region.before.get("ndvi")),
+        "before_ndwi": _f(region.before.get("ndwi")),
+        "before_ndbi": _f(region.before.get("ndbi")),
+        "area_km2": float(region.area_km2),
+        "compactness": compactness,
+        "elongation": elongation,
     }
 
 
-def matrix(regions: list[Region]) -> np.ndarray:
-    return np.array(
-        [[vector(r)[name] for name in FEATURES] for r in regions], dtype="float32"
-    )
+def vector(region: Region) -> list[float]:
+    r = row(region)
+    return [r[name] for name in FEATURES]
+
+
+def rule_label(f: dict[str, float]) -> EventType:
+    """Weak-supervision labeller.
+
+    Used two ways: to bootstrap training labels (hand-corrected afterwards), and
+    as the runtime fallback when the trained model is missing. Keeping it in the
+    repo is also the evidence of how the labels were made.
+    """
+    if f["d_ndwi"] > 0.15 and f["d_ndvi"] < -0.05:
+        return EventType.flood
+    if f["d_ndwi"] < -0.15:
+        return EventType.water_recession
+    if f["d_nbr"] < -0.25 and f["d_ndvi"] < -0.15:
+        return EventType.wildfire_burn
+    if f["d_ndvi"] < -0.20 and abs(f["d_ndbi"]) < 0.05:
+        return EventType.deforestation
+    if f["d_ndbi"] > 0.10 and f["d_ndvi"] < -0.10:
+        return EventType.urban_expansion
+    return EventType.no_change

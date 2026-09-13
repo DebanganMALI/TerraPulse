@@ -1,33 +1,32 @@
-"""Live Copernicus / Sentinel Hub adapter.
-
-Same interface as LocalProvider so `provider="sentinel"` is a config switch, not
-a code change. Not wired to the network yet - the demo path is `local`.
-Credentials come from SENTINEL_CLIENT_ID / SENTINEL_CLIENT_SECRET.
-"""
+from __future__ import annotations
 
 from app.config import settings
-from app.pipeline.providers.base import SceneBundle
+
+from .base import SceneBundle
 
 TOKEN_URL = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
 PROCESS_URL = "https://sh.dataspace.copernicus.eu/api/v1/process"
 
 
+class SentinelUnavailable(RuntimeError):
+    pass
+
+
 class SentinelProvider:
-    def __init__(self) -> None:
-        s = settings()
-        self.client_id = s.sentinel_client_id
-        self.client_secret = s.sentinel_client_secret
+    """Copernicus Sentinel Hub adapter.
+
+    Interface and config plumbing only. The demo path is `local` with cached scenes;
+    this exists so the provider layer is genuinely pluggable, not so we can claim
+    live ingest works. Do not enable it in a demo without testing it first.
+    """
 
     @property
     def configured(self) -> bool:
-        return bool(self.client_id and self.client_secret)
+        s = settings()
+        return bool(s.sentinel_client_id and s.sentinel_client_secret)
 
     def load(self, aoi_id: str) -> SceneBundle:
-        if not self.configured:
-            raise RuntimeError(
-                "sentinel provider needs SENTINEL_CLIENT_ID and SENTINEL_CLIENT_SECRET"
-            )
-        # OAuth2 client-credentials -> token, then POST the AOI bbox and the two
-        # date windows to PROCESS_URL, read the returned GeoTIFF through
-        # rasterio.MemoryFile and return a SceneBundle.
-        raise NotImplementedError("live fetch not implemented; use provider=local")
+        # OAuth2 client-credentials against TOKEN_URL, then POST the AOI bbox and the
+        # two date windows to PROCESS_URL requesting B02/B03/B04/B08/B11 as GeoTIFF.
+        # rasterio.MemoryFile on the response bytes gives the same SceneBundle as local.
+        raise SentinelUnavailable("sentinel provider is not implemented; use provider='local'")

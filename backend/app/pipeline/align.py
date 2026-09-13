@@ -1,55 +1,74 @@
-import numpy as np
-import rasterio
-from rasterio.crs import CRS
-from rasterio.warp import Resampling, calculate_default_transform, reproject
+from __future__ import annotations
 
-from app.pipeline.providers.base import SceneBundle
+import numpy as np
+from rasterio.crs import CRS
+from rasterio.transform import array_bounds, from_bounds
+from rasterio.warp import Resampling, reproject, transform_bounds
+
+from .providers.base import SceneBundle
 
 TARGET_CRS = CRS.from_epsg(4326)
 
+# keeps a full run to a few seconds; finer than this buys nothing at demo zoom
+MAX_EDGE = 2400
 
-def _reproject(
-    array: np.ndarray, src_transform, src_crs, dst_transform, dst_crs, shape
-) -> np.ndarray:
-    out = np.zeros((array.shape[0], *shape), dtype="float32")
-    for i in range(array.shape[0]):
-        reproject(
-            source=array[i],
-            destination=out[i],
-            src_transform=src_transform,
-            src_crs=src_crs,
-            dst_transform=dst_transform,
-            dst_crs=dst_crs,
-            resampling=Resampling.bilinear,
-        )
-    return out
+
+def _bounds_4326(transform, crs, shape) -> tuple[float, float, float, float]:
+    h, w = shape[-2:]
+    left, bottom, right, top = array_bounds(h, w, transform)
+    return transform_bounds(crs, TARGET_CRS, left, bottom, right, top)
+
+
+def _warp(src, src_transform, src_crs, dst_transform, dst_shape) -> np.ndarray:
+    dst = np.zeros((src.shape[0], *dst_shape), dtype="float32")
+    reproject(
+        source=src,
+        destination=dst,
+        src_transform=src_transform,
+        src_crs=src_crs,
+        dst_transform=dst_transform,
+        dst_crs=TARGET_CRS,
+        resampling=Resampling.bilinear,
+    )
+    return dst
 
 
 def align(bundle: SceneBundle) -> SceneBundle:
-    """Put both scenes on the same EPSG:4326 grid.
-
-    Short-circuits when they already match, which is the common case for a pair
-    cut from the same tile - saves ~20s per run while tuning.
-    """
-    same_shape = bundle.before.shape == bundle.after.shape
-    if same_shape and bundle.crs == TARGET_CRS:
+    if bundle.aligned and bundle.crs == TARGET_CRS:
         return bundle
 
-    h, w = bundle.before.shape[1], bundle.before.shape[2]
-    left, bottom, right, top = rasterio.transform.array_bounds(h, w, bundle.transform)
+    at = bundle.after_transform or bundle.transform
+    acrs = bundle.after_crs or bundle.crs
 
-    dst_transform, dst_w, dst_h = calculate_default_transform(
-        bundle.crs, TARGET_CRS, w, h, left, bottom, right, top
-    )
-    shape = (dst_h, dst_w)
+    bb = _bounds_4326(bundle.transform, bundle.crs, bundle.before.shape)
+    ab = _bounds_4326(at, acrs, bundle.after.shape)
 
-    before = _reproject(
-        bundle.before, bundle.transform, bundle.crs, dst_transform, TARGET_CRS, shape
-    )
-    after = _reproject(
-        bundle.after, bundle.transform, bundle.crs, dst_transform, TARGET_CRS, shape
-    )
+    left, bottom = max(bb[0], ab[0]), max(bb[1], ab[1])
+    right, top = min(bb[2], ab[2]), min(bb[3], ab[3])
+    if right <= left or top <= bottom:
+        raise ValueError("before and after scenes do not overlap")
+
+    bh, bw = bundle.before.shape[-2:]
+    res = max((bb[2] - bb[0]) / bw, (bb[3] - bb[1]) / bh)
+
+    w = max(int(round((right - left) / res)), 1)
+    h = max(int(round((top - bottom) / res)), 1)
+    if max(w, h) > MAX_EDGE:
+        k = MAX_EDGE / max(w, h)
+        w, h = max(int(w * k), 1), max(int(h * k), 1)
+
+    dst_transform = from_bounds(left, bottom, right, top, w, h)
 
     return bundle._replace(
-        before=before, after=after, transform=dst_transform, crs=TARGET_CRS
+        before=_warp(bundle.before, bundle.transform, bundle.crs, dst_transform, (h, w)),
+        after=_warp(bundle.after, at, acrs, dst_transform, (h, w)),
+        transform=dst_transform,
+        crs=TARGET_CRS,
+        after_transform=None,
+        after_crs=None,
     )
+
+
+def bbox_of(bundle: SceneBundle) -> list[float]:
+    h, w = bundle.before.shape[-2:]
+    return list(array_bounds(h, w, bundle.transform))

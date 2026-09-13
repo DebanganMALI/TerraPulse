@@ -1,177 +1,325 @@
-"""Forward risk per grid cell.
-
-This is a risk-propensity model over terrain, recent change and rainfall - not
-a physical forecast. Say that plainly when asked; overclaiming here is what
-sinks projects at judging.
-"""
+from __future__ import annotations
 
 import csv
 import logging
-import math
+from datetime import date, datetime, timedelta
 from functools import lru_cache
+from pathlib import Path
 
 import numpy as np
-import rasterio.transform
+import shapely
+from rasterio.transform import array_bounds
+from shapely.geometry import Point, box
 
 from app.config import settings
-from app.pipeline.vectorize import Region
-from app.schemas.analysis import RiskCell, RiskDriver
-from app.schemas.common import EventType, Geometry, risk_level_for
+from app.schemas.analysis import DetectedEvent, RiskCell, RiskDriver
+from app.schemas.common import EventType, risk_level_for
+from app.security.paths import safe_join
 
-log = logging.getLogger("terrapulse")
+from .indices import INDEX_NAMES
 
-GRID = 40  # 1600 cells - inside the 2500 map budget, smooth on screen
+log = logging.getLogger("terrapulse.pipeline")
+
+# 40x40 = 1600 cells: inside the contract's 2500 cap, smooth on the map, and
+# finer than this is invisible at demo zoom while making Leaflet stutter.
+GRID = 40
+
+MODEL_FILE = "risk_model.joblib"
 
 CELL_FEATURES = [
     "mean_d_ndwi",
     "mean_d_ndvi",
-    "mean_d_nbr",
-    "mean_d_ndbi",
     "changed_fraction",
     "dist_to_event_km",
-    "rainfall_7d_mm",
-    "rainfall_30d_mm",
+    "before_ndwi",
     "before_ndvi",
     "before_ndbi",
+    "rainfall_7d_mm",
+    "rainfall_30d_mm",
+    "temp_max_c",
 ]
 
-DRIVER_LABEL = {
-    "mean_d_ndwi": "water_extent_change",
+# what C shows in the popup; the raw feature names read like debug output
+DRIVER_NAMES = {
+    "mean_d_ndwi": "water_index_change",
     "mean_d_ndvi": "vegetation_loss",
-    "mean_d_nbr": "burn_signal",
-    "mean_d_ndbi": "built_up_change",
-    "changed_fraction": "detected_change_density",
-    "dist_to_event_km": "distance_to_water_change",
-    "rainfall_7d_mm": "cumulative_rainfall_7d",
-    "rainfall_30d_mm": "cumulative_rainfall_30d",
+    "changed_fraction": "extent_of_detected_change",
+    "dist_to_event_km": "proximity_to_detected_event",
+    "before_ndwi": "pre_existing_water",
     "before_ndvi": "vegetation_cover",
     "before_ndbi": "built_up_exposure",
+    "rainfall_7d_mm": "cumulative_rainfall_7d",
+    "rainfall_30d_mm": "cumulative_rainfall_30d",
+    "temp_max_c": "maximum_temperature",
+}
+
+# Transparent fallback used when no trained model is present. Weights are a
+# stated prior, not a fitted result - say so rather than implying otherwise.
+HEURISTIC_WEIGHTS = {
+    "mean_d_ndwi": 0.28,
+    "changed_fraction": 0.22,
+    "dist_to_event_km": 0.18,
+    "rainfall_7d_mm": 0.12,
+    "before_ndwi": 0.08,
+    "mean_d_ndvi": 0.07,
+    "before_ndbi": 0.05,
+}
+
+# value that maps to 1.0 when normalising a feature into [0, 1]
+NORMALISERS = {
+    "mean_d_ndwi": 0.40,
+    "mean_d_ndvi": 0.40,
+    "changed_fraction": 0.50,
+    "dist_to_event_km": 8.0,
+    "before_ndwi": 0.50,
+    "before_ndvi": 0.60,
+    "before_ndbi": 0.40,
+    "rainfall_7d_mm": 250.0,
+    "rainfall_30d_mm": 900.0,
+    "temp_max_c": 40.0,
 }
 
 
-@lru_cache(maxsize=8)
-def load_env(aoi_id: str) -> tuple[float, float, float]:
-    """(rainfall_7d, rainfall_30d, temp_max) from data/env/<aoi_id>.csv.
-    Missing file is fine - the model just loses those features."""
-    path = settings().env_dir / f"{aoi_id}.csv"
-    if not path.is_file():
-        return 0.0, 0.0, 0.0
+def block_mean(a: np.ndarray, n: int = GRID) -> np.ndarray:
+    h, w = a.shape
+    bh, bw = max(h // n, 1), max(w // n, 1)
+    a = a[: bh * n, : bw * n]
+    return a.reshape(n, bh, n, bw).mean(axis=(1, 3))
+
+
+def _km_per_deg(lat: float) -> tuple[float, float]:
+    return 111.32 * float(np.cos(np.radians(lat))), 110.574
+
+
+@lru_cache(maxsize=4)
+def load_env(aoi_id: str) -> tuple[tuple[str, float, float], ...]:
     try:
-        rows = list(csv.DictReader(path.open(encoding="utf-8")))
-        rain = [float(r.get("rainfall_mm") or 0) for r in rows]
-        temp = [float(r.get("temp_max_c") or 0) for r in rows]
-        return (
-            sum(rain[-7:]),
-            sum(rain[-30:]),
-            max(temp) if temp else 0.0,
-        )
-    except (ValueError, OSError) as exc:
-        log.warning("could not read env csv for %s: %s", aoi_id, exc)
-        return 0.0, 0.0, 0.0
-
-
-def _heuristic_score(f: dict[str, float]) -> float:
-    """Used until a trained risk model exists. Deliberately simple and monotone
-    so the map reads sensibly rather than randomly."""
-    proximity = math.exp(-((f["dist_to_event_km"] / 6.0) ** 2))
-    wetness = max(0.0, f["mean_d_ndwi"]) * 2.0
-    density = f["changed_fraction"]
-    rain = min(1.0, f["rainfall_7d_mm"] / 300.0)
-    raw = 0.45 * proximity + 0.20 * wetness + 0.20 * density + 0.15 * rain
-    return float(np.clip(raw, 0.0, 1.0))
-
-
-def _drivers(f: dict[str, float]) -> list[RiskDriver]:
-    weights = {
-        "dist_to_event_km": 0.45 * math.exp(-((f["dist_to_event_km"] / 6.0) ** 2)),
-        "rainfall_7d_mm": 0.15 * min(1.0, f["rainfall_7d_mm"] / 300.0),
-        "mean_d_ndwi": 0.20 * max(0.0, f["mean_d_ndwi"]) * 2.0,
-        "changed_fraction": 0.20 * f["changed_fraction"],
-        "before_ndvi": 0.10 * max(0.0, f["before_ndvi"]),
-    }
-    total = sum(weights.values()) or 1.0
-    top = sorted(weights.items(), key=lambda kv: kv[1], reverse=True)[:3]
-    return [
-        RiskDriver(
-            name=DRIVER_LABEL.get(k, k),
-            contribution=round(float(np.clip(v / total, 0.0, 1.0)), 3),
-        )
-        for k, v in top
-    ]
-
-
-def score_grid(
-    shape: tuple[int, int],
-    transform,
-    deltas: dict[str, np.ndarray],
-    before_idx: dict[str, np.ndarray],
-    mask: np.ndarray,
-    regions: list[Region],
-    labels: list,
-    aoi_id: str,
-) -> list[RiskCell]:
-    h, w = shape
-    rain7, rain30, _temp = load_env(aoi_id)
-
-    flood_points = [
-        r.centroid
-        for r, (etype, _) in zip(regions, labels, strict=False)
-        if etype in (EventType.flood, EventType.water_recession)
-    ] or [r.centroid for r in regions]
-
-    step_r, step_c = max(1, h // GRID), max(1, w // GRID)
-    cells: list[RiskCell] = []
-
-    for gi in range(GRID):
-        r0, r1 = gi * step_r, min(h, (gi + 1) * step_r)
-        if r0 >= r1:
-            continue
-        for gj in range(GRID):
-            c0, c1 = gj * step_c, min(w, (gj + 1) * step_c)
-            if c0 >= c1:
-                continue
-
-            west, north = rasterio.transform.xy(transform, r0, c0, offset="ul")
-            east, south = rasterio.transform.xy(transform, r1, c1, offset="ul")
-            clat, clon = (north + south) / 2, (west + east) / 2
-
-            if flood_points:
-                nearest_deg = min(
-                    math.hypot(clat - la, clon - lo) for la, lo in flood_points
+        path: Path = safe_join(settings().env_dir, f"{aoi_id}.csv")
+    except Exception:
+        return ()
+    if not path.is_file():
+        return ()
+    rows = []
+    try:
+        with open(path, newline="", encoding="utf-8") as fh:
+            for r in csv.DictReader(fh):
+                rows.append(
+                    (
+                        r.get("date", ""),
+                        float(r.get("rainfall_mm") or 0.0),
+                        float(r.get("temp_max_c") or 0.0),
+                    )
                 )
-            else:
-                nearest_deg = 1.0
+    except Exception as exc:
+        log.warning("env csv unreadable for %s: %s", aoi_id, exc)
+        return ()
+    return tuple(rows)
 
-            block = (slice(r0, r1), slice(c0, c1))
-            f = {
-                "mean_d_ndwi": float(deltas["ndwi"][block].mean()),
-                "mean_d_ndvi": float(deltas["ndvi"][block].mean()),
-                "mean_d_nbr": float(deltas["nbr"][block].mean()),
-                "mean_d_ndbi": float(deltas["ndbi"][block].mean()),
-                "changed_fraction": float(mask[block].mean()),
-                "dist_to_event_km": nearest_deg * 110.574,
+
+def rainfall_window(aoi_id: str, upto: date | None, days: int) -> float:
+    rows = load_env(aoi_id)
+    if not rows or upto is None:
+        return 0.0
+    start = upto - timedelta(days=days)
+    total = 0.0
+    for d, rain, _ in rows:
+        try:
+            when = datetime.strptime(d, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if start <= when <= upto:
+            total += rain
+    return total
+
+
+def mean_temp(aoi_id: str) -> float:
+    rows = load_env(aoi_id)
+    vals = [t for _, _, t in rows if t]
+    return float(np.mean(vals)) if vals else 0.0
+
+
+@lru_cache(maxsize=1)
+def _load_model():
+    try:
+        path: Path = safe_join(settings().models_dir, MODEL_FILE)
+    except Exception:
+        return None
+    if not path.is_file():
+        return None
+    try:
+        import joblib
+
+        bundle = joblib.load(path)
+    except Exception as exc:
+        log.warning("risk model failed to load: %s", exc)
+        return None
+    if list(bundle.get("features") or []) != CELL_FEATURES:
+        log.warning("risk model feature order mismatch; ignoring the model")
+        return None
+    return bundle
+
+
+def model_info() -> dict[str, str]:
+    bundle = _load_model()
+    if bundle is None:
+        return {"risk_model": "weighted_heuristic_v1", "risk_auc": "n/a (not a fitted model)"}
+    return {
+        "risk_model": str(bundle.get("version", "gb")),
+        "risk_auc": str(bundle.get("auc", "unreported")),
+    }
+
+
+def _normalise(name: str, value: float) -> float:
+    scale = NORMALISERS.get(name, 1.0)
+    if name == "dist_to_event_km":
+        # closer is riskier
+        return float(np.clip(1.0 - value / scale, 0.0, 1.0))
+    if name in ("mean_d_ndvi",):
+        # vegetation loss is a negative delta
+        return float(np.clip(-value / scale, 0.0, 1.0))
+    return float(np.clip(abs(value) / scale, 0.0, 1.0))
+
+
+def _primary_risk(cell_geom, events: list[DetectedEvent]) -> EventType:
+    if not events:
+        return EventType.no_change
+    centre = cell_geom.centroid
+    best, best_d = events[0], float("inf")
+    for e in events:
+        lat, lon = e.centroid
+        d = (centre.x - lon) ** 2 + (centre.y - lat) ** 2
+        if d < best_d:
+            best, best_d = e, d
+    return best.event_type
+
+
+def score_risk(
+    bundle,
+    events: list[DetectedEvent],
+    deltas: dict[str, np.ndarray | None],
+    before_idx: dict[str, np.ndarray | None],
+    mask: np.ndarray,
+    warnings: list[str] | None = None,
+) -> list[RiskCell]:
+    meta = bundle.meta
+    aoi_id = meta.get("aoi_id", "")
+
+    h, w = bundle.before.shape[-2:]
+    left, bottom, right, top = array_bounds(h, w, bundle.transform)
+
+    grids: dict[str, np.ndarray] = {}
+    for k in INDEX_NAMES:
+        d = deltas.get(k)
+        grids[f"mean_d_{k}"] = block_mean(d) if d is not None else np.zeros((GRID, GRID), "float32")
+        b = before_idx.get(k)
+        grids[f"before_{k}"] = block_mean(b) if b is not None else np.zeros((GRID, GRID), "float32")
+    grids["changed_fraction"] = block_mean(mask.astype("float32"))
+
+    after_date = None
+    raw = meta.get("after_date")
+    if raw:
+        try:
+            after_date = datetime.strptime(str(raw)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            after_date = None
+
+    rain7 = rainfall_window(aoi_id, after_date, 7)
+    rain30 = rainfall_window(aoi_id, after_date, 30)
+    tmax = mean_temp(aoi_id)
+    if not load_env(aoi_id) and warnings is not None:
+        warnings.append(f"no environmental csv for {aoi_id}; rainfall features are zero")
+
+    event_shapes = [shapely.geometry.shape(e.geometry.model_dump()) for e in events]
+    event_union = shapely.union_all(event_shapes) if event_shapes else None
+
+    dlon = (right - left) / GRID
+    dlat = (top - bottom) / GRID
+    mid_lat = (top + bottom) / 2.0
+    km_lon, km_lat = _km_per_deg(mid_lat)
+
+    model_bundle = _load_model()
+    model = model_bundle["model"] if model_bundle else None
+
+    cells: list[RiskCell] = []
+    rows_for_model: list[list[float]] = []
+    staged: list[tuple[str, object, dict[str, float]]] = []
+
+    for r in range(GRID):
+        for c in range(GRID):
+            cell_left = left + c * dlon
+            cell_top = top - r * dlat
+            geom = box(cell_left, cell_top - dlat, cell_left + dlon, cell_top)
+            centre = Point(cell_left + dlon / 2, cell_top - dlat / 2)
+
+            if event_union is None:
+                dist_km = NORMALISERS["dist_to_event_km"]
+            else:
+                d_deg = centre.distance(event_union)
+                dist_km = float(np.hypot(d_deg * km_lon, d_deg * km_lat)) if d_deg > 0 else 0.0
+
+            feats = {
+                "mean_d_ndwi": float(grids["mean_d_ndwi"][r, c]),
+                "mean_d_ndvi": float(grids["mean_d_ndvi"][r, c]),
+                "changed_fraction": float(grids["changed_fraction"][r, c]),
+                "dist_to_event_km": dist_km,
+                "before_ndwi": float(grids["before_ndwi"][r, c]),
+                "before_ndvi": float(grids["before_ndvi"][r, c]),
+                "before_ndbi": float(grids["before_ndbi"][r, c]),
                 "rainfall_7d_mm": rain7,
                 "rainfall_30d_mm": rain30,
-                "before_ndvi": float(before_idx["ndvi"][block].mean()),
-                "before_ndbi": float(before_idx["ndbi"][block].mean()),
+                "temp_max_c": tmax,
             }
+            staged.append((f"c_{r:04d}_{c:04d}", geom, feats))
+            rows_for_model.append([feats[n] for n in CELL_FEATURES])
 
-            score = round(_heuristic_score(f), 4)
-            ring = [
-                [west, south],
-                [east, south],
-                [east, north],
-                [west, north],
-                [west, south],
-            ]
-            cells.append(
-                RiskCell(
-                    cell_id=f"c_{gi:04d}_{gj:04d}",
-                    risk_score=score,
-                    risk_level=risk_level_for(score),
-                    primary_risk=EventType.flood,
-                    geometry=Geometry(type="Polygon", coordinates=[ring]),
-                    drivers=_drivers(f),
-                )
+    if model is not None:
+        try:
+            scores = [float(p[1]) for p in model.predict_proba(rows_for_model)]
+            importances = dict(
+                zip(CELL_FEATURES, getattr(model, "feature_importances_", []), strict=False)
             )
+        except Exception as exc:
+            log.warning("risk model inference failed (%s); using the heuristic", exc)
+            if warnings is not None:
+                warnings.append(f"risk model inference failed ({type(exc).__name__}); used heuristic")
+            model = None
+
+    if model is None:
+        importances = dict(HEURISTIC_WEIGHTS)
+        scores = []
+        for _, _, feats in staged:
+            s = sum(w * _normalise(name, feats[name]) for name, w in HEURISTIC_WEIGHTS.items())
+            scores.append(float(np.clip(s / sum(HEURISTIC_WEIGHTS.values()), 0.0, 1.0)))
+
+    for (cell_id, geom, feats), score in zip(staged, scores, strict=True):
+        # weight each importance by this cell's normalised value so two red cells
+        # can report different reasons - that is what makes the layer read as a
+        # model rather than a colour ramp
+        weighted = {
+            name: imp * _normalise(name, feats.get(name, 0.0))
+            for name, imp in importances.items()
+            if imp
+        }
+        top = sorted(weighted.items(), key=lambda kv: kv[1], reverse=True)[:3]
+        total = sum(v for _, v in top)
+        drivers = [
+            RiskDriver(
+                name=DRIVER_NAMES.get(name, name),
+                contribution=round(v / total, 3) if total > 0 else 0.0,
+            )
+            for name, v in top
+        ]
+
+        score = float(np.clip(score, 0.0, 1.0))
+        cells.append(
+            RiskCell(
+                cell_id=cell_id,
+                risk_score=round(score, 4),
+                risk_level=risk_level_for(score),
+                primary_risk=_primary_risk(geom, events),
+                geometry=shapely.geometry.mapping(geom),
+                drivers=drivers,
+            )
+        )
+
     return cells

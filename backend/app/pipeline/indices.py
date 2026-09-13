@@ -1,29 +1,51 @@
-import numpy as np
+from __future__ import annotations
 
-from app.pipeline.providers.base import SceneBundle
+import numpy as np
 
 EPS = 1e-6
 
+INDEX_NAMES = ("ndwi", "ndvi", "nbr", "ndbi")
+
 
 def _norm(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    # EPS stops nodata/edge pixels (both bands zero) becoming nan, and one nan
+    # propagates through the entire change mask
     with np.errstate(invalid="ignore", divide="ignore"):
         out = (a - b) / (a + b + EPS)
     return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0).astype("float32")
 
 
-def compute(bundle: SceneBundle, which: str) -> dict[str, np.ndarray]:
-    b = lambda name: bundle.band(which, name)  # noqa: E731
-    green, red, nir, swir = b("green"), b("red"), b("nir"), b("swir")
-    return {
-        "ndwi": _norm(green, nir),  # water:      higher = wetter
-        "ndvi": _norm(nir, red),  # vegetation: higher = greener
-        "nbr": _norm(nir, swir),  # burn:       drops sharply after fire
-        "ndbi": _norm(swir, nir),  # built-up:   higher = more impervious
-    }
+def ndwi(green: np.ndarray, nir: np.ndarray) -> np.ndarray:
+    return _norm(green, nir)
 
 
-def cloud_mask(bundle: SceneBundle, which: str, threshold: float = 0.25) -> np.ndarray:
-    """Cheap brightness test. Not a real cloud classifier - it just keeps bright
-    cloud tops from being reported as change, and the excluded fraction goes
-    into result.warnings so the limitation is stated rather than hidden."""
-    return bundle.band(which, "blue") > threshold
+def ndvi(nir: np.ndarray, red: np.ndarray) -> np.ndarray:
+    return _norm(nir, red)
+
+
+def nbr(nir: np.ndarray, swir: np.ndarray) -> np.ndarray:
+    return _norm(nir, swir)
+
+
+def ndbi(swir: np.ndarray, nir: np.ndarray) -> np.ndarray:
+    return _norm(swir, nir)
+
+
+def compute(arr: np.ndarray, band_map: dict[str, int]) -> dict[str, np.ndarray | None]:
+    def band(name: str) -> np.ndarray | None:
+        i = band_map.get(name)
+        if i is None or i > arr.shape[0]:
+            return None
+        return arr[i - 1]
+
+    green, red, nir, swir = band("green"), band("red"), band("nir"), band("swir")
+
+    out: dict[str, np.ndarray | None] = dict.fromkeys(INDEX_NAMES)
+    if green is not None and nir is not None:
+        out["ndwi"] = ndwi(green, nir)
+    if nir is not None and red is not None:
+        out["ndvi"] = ndvi(nir, red)
+    if nir is not None and swir is not None:
+        out["nbr"] = nbr(nir, swir)
+        out["ndbi"] = ndbi(swir, nir)
+    return out
