@@ -1,0 +1,30 @@
+{
+  "version": "rf_v1",
+  "n_samples": 59,
+  "n_hand_corrected": 0,
+  "aois": [
+    "kerala_flood_2018"
+  ],
+  "classes": {
+    "flood": 52,
+    "water_recession": 7
+  },
+  "cv_folds": 5,
+  "accuracy": 1.0,
+  "macro_f1": 1.0,
+  "feature_importances": {
+    "d_ndwi": 0.2479,
+    "d_ndvi": 0.2297,
+    "before_ndvi": 0.1976,
+    "before_ndwi": 0.149,
+    "before_ndbi": 0.1182,
+    "area_km2": 0.0177,
+    "d_nbr": 0.0149,
+    "d_ndbi": 0.0086,
+    "elongation": 0.007,
+    "compactness": 0.0057,
+    "d_ndwi_std": 0.0021,
+    "d_ndvi_std": 0.0018
+  },
+  "label_source": "rule_label weak supervision"
+}
