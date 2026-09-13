@@ -13,7 +13,7 @@
     76.3304
   ],
   "before_date": "2018-02-03",
-  "after_date": "2018-08-22",
+  "after_date": "2018-09-11",
   "provider": "local",
   "expected_event": "flood",
   "band_map": {
