@@ -1,0 +1,22 @@
+{
+  "version": "gb_v1",
+  "auc": 0.9006,
+  "n_cells": 1600,
+  "positive_rate": 0.1363,
+  "aois": [
+    "kerala_flood_2018"
+  ],
+  "feature_importances": {
+    "before_ndbi": 0.3627,
+    "before_ndvi": 0.3525,
+    "before_ndwi": 0.2848,
+    "mean_d_ndwi": 0.0,
+    "mean_d_ndvi": 0.0,
+    "changed_fraction": 0.0,
+    "dist_to_event_km": 0.0,
+    "rainfall_7d_mm": 0.0,
+    "rainfall_30d_mm": 0.0,
+    "temp_max_c": 0.0
+  },
+  "note": "features built from before-state only; single-AOI folds are spatially autocorrelated"
+}

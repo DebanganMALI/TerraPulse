@@ -37,9 +37,23 @@ Seeded on first boot from `.env`. Passwords are never hardcoded in source.
 | `officer` | authority | the above, plus acknowledge alerts |
 
 ```bash
-pytest -q          # tests
-ruff check app     # lint
+pytest -q                    # tests
+ruff check app tests         # lint
+python -m app.tools.check    # validate scene metadata + pipeline output
 ```
+
+### Pre-integration check
+
+Before merging pipeline work, run:
+
+```bash
+python -m app.tools.check --real
+```
+
+It validates every `data/scenes/*/meta.json` and runs the pipeline, then reports
+transposed coordinates, polygons outside the AOI, a risk grid over the 2500-cell
+map budget, inconsistent risk levels, missing overlays and schema drift.
+`python -m app.tools.check --template` prints a valid `meta.json` to copy.
 
 ## Layout
 
