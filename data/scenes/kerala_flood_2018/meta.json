@@ -1,0 +1,26 @@
+{
+  "aoi_id": "kerala_flood_2018",
+  "name": "Kerala Floods - Aug 2018",
+  "region": "Kuttanad, Alappuzha",
+  "bbox": [
+    76.2205,
+    9.4601,
+    76.4403,
+    9.68
+  ],
+  "center": [
+    9.5701,
+    76.3304
+  ],
+  "before_date": "2018-02-03",
+  "after_date": "2018-08-22",
+  "provider": "local",
+  "expected_event": "flood",
+  "band_map": {
+    "blue": 1,
+    "green": 2,
+    "red": 3,
+    "nir": 4,
+    "swir": 5
+  }
+}
