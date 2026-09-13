@@ -85,12 +85,33 @@ def run_analysis(
     mask = None
     deltas: dict = {}
     try:
-        cloud = detect.cloud_mask(bundle.after, bundle.band_map)
-        if cloud is not None:
-            frac = float(cloud.mean())
-            if frac > 0.02:
-                warnings.append(f"cloud masked {frac:.1%} of the after scene")
-        mask, deltas = detect.detect_change(before_idx, after_idx, exclude=cloud)
+        valid, stats = detect.valid_mask(
+            bundle.before, bundle.after, bundle.band_map, before_idx, after_idx
+        )
+        if stats["cloud"] > 0.02:
+            warnings.append(f"cloud masked {stats['cloud']:.1%} of the scene pair")
+        if stats["nodata"] > 0.01:
+            warnings.append(f"{stats['nodata']:.1%} of the overlap has no data")
+        if stats["permanent_water"] > 0.01:
+            warnings.append(
+                f"{stats['permanent_water']:.1%} is water in both scenes and was excluded "
+                "as permanent rather than reported as change"
+            )
+        if stats["valid"] < 0.35:
+            warnings.append(
+                f"only {stats['valid']:.1%} of the scene is usable; "
+                "detection over this pair is unreliable"
+            )
+        mask, deltas, offsets = detect.detect_change(before_idx, after_idx, valid=valid)
+        model_info["scene_offsets"] = ", ".join(f"{k}{v:+.3f}" for k, v in offsets.items())
+        model_info["usable_fraction"] = f"{stats['valid']:.1%}"
+        big = {k: v for k, v in offsets.items() if abs(v) > 0.10}
+        if big:
+            warnings.append(
+                "large scene-wide index shift removed before thresholding "
+                f"({', '.join(f'{k} {v:+.2f}' for k, v in big.items())}); "
+                "the two dates differ seasonally or atmospherically"
+            )
     except Exception as exc:
         warnings.append(f"change detection failed ({type(exc).__name__}); no events reported")
 
