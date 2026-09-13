@@ -12,6 +12,11 @@ THRESHOLDS = {"ndwi": 0.20, "ndvi": 0.25, "nbr": 0.30, "ndbi": 0.30}
 # blue reflectance above this in L2A is nearly always cloud
 CLOUD_BLUE = 0.25
 
+# Cloud shadow reads as a large negative brightness step and gets detected as
+# new water. It sits next to its cloud, so dilating the cloud mask removes most
+# of it without needing a separate shadow classifier. 30 px at 10 m ~ 300 m.
+CLOUD_DILATION_PX = 30
+
 # NDWI above this in BOTH scenes is sea, lake or river that was already there.
 # Flood is *new* water, so permanent water is excluded rather than detected.
 PERMANENT_WATER_NDWI = 0.30
@@ -45,6 +50,8 @@ def valid_mask(
         c = cloud_mask(arr, band_map)
         if c is not None:
             cloud |= c
+    if cloud.any():
+        cloud = ndimage.binary_dilation(cloud, iterations=CLOUD_DILATION_PX)
 
     nodata = (before.min(axis=0) <= 0) | (after.min(axis=0) <= 0)
 

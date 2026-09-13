@@ -1,0 +1,15 @@
+{
+  "annotator": "single, photo-interpretation of true-colour before/after crops with the detected polygon outlined",
+  "question": "does standing water appear inside the polygon in the after scene",
+  "n_interpreted": 18,
+  "n_corrected": 1,
+  "ambiguous_excluded": [
+    18,
+    26,
+    28,
+    36,
+    38,
+    40
+  ],
+  "caveat": "photo-interpreted reference, not field ground truth"
+}

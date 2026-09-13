@@ -21,6 +21,12 @@ SIMPLIFY_DEG = 0.0005
 # Leaflet copes with a few hundred polygons, not a few thousand
 MAX_REGIONS = 120
 
+# Thin ribbons along canals, roads and field boundaries are co-registration
+# error between the two dates, not change: the two scenes disagree by a pixel
+# and the edge lights up. They show extreme index deltas because every pixel is
+# mixed. 4*pi*A/P^2 below this is a sliver, not a region.
+MIN_COMPACTNESS = 0.08
+
 
 class Region(NamedTuple):
     geometry: object                        # shapely, EPSG:4326, coords are (lon, lat)
@@ -91,6 +97,11 @@ def to_polygons(
 
         a = area_km2(poly)
         if a < min_area_km2:
+            continue
+
+        perim = poly.length
+        compactness = (4 * math.pi * poly.area / (perim * perim)) if perim > 0 else 0.0
+        if compactness < MIN_COMPACTNESS:
             continue
 
         i = v - 1
