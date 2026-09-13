@@ -23,8 +23,17 @@ async function loadBounds(aoi: Aoi) {
   return bboxToBounds(aoi.bbox);
 }
 
-export function BeforeAfterSwipe({ map, aoi }: { map: LeafletMap; aoi: Aoi }) {
+export function BeforeAfterSwipe({
+  map,
+  aoi,
+  onUnavailable,
+}: {
+  map: LeafletMap;
+  aoi: Aoi;
+  onUnavailable: (aoiId: string) => void;
+}) {
   const [split, setSplit] = useState(50);
+  const [failed, setFailed] = useState(false);
   const beforeRef = useRef<L.ImageOverlay | null>(null);
   const afterRef = useRef<L.ImageOverlay | null>(null);
   const boundsRef = useRef<L.LatLngBounds | null>(null);
@@ -47,6 +56,8 @@ export function BeforeAfterSwipe({ map, aoi }: { map: LeafletMap; aoi: Aoi }) {
 
   useEffect(() => {
     let dead = false;
+    setFailed(false);
+
     for (const name of ["ba-before", "ba-after"]) {
       if (!map.getPane(name)) {
         const p = map.createPane(name);
@@ -54,16 +65,33 @@ export function BeforeAfterSwipe({ map, aoi }: { map: LeafletMap; aoi: Aoi }) {
       }
     }
 
+    // a missing png otherwise paints leaflet's broken-image box across the aoi
+    const drop = () => {
+      if (dead) return;
+      beforeRef.current?.remove();
+      afterRef.current?.remove();
+      beforeRef.current = null;
+      afterRef.current = null;
+      setFailed(true);
+      onUnavailable(aoi.aoi_id);
+    };
+
     loadBounds(aoi).then((bounds) => {
       if (dead) return;
       boundsRef.current = bounds;
       beforeRef.current = L.imageOverlay(staticUrl(aoi.preview_before_url), bounds, {
         pane: "ba-before",
-      }).addTo(map);
+        errorOverlayUrl: "",
+      })
+        .on("error", drop)
+        .addTo(map);
       afterRef.current = L.imageOverlay(staticUrl(aoi.preview_after_url), bounds, {
         pane: "ba-after",
-      }).addTo(map);
-      afterRef.current.once("load", clip);
+        errorOverlayUrl: "",
+      })
+        .on("error", drop)
+        .once("load", clip)
+        .addTo(map);
       clip();
     });
 
@@ -76,9 +104,11 @@ export function BeforeAfterSwipe({ map, aoi }: { map: LeafletMap; aoi: Aoi }) {
       beforeRef.current = null;
       afterRef.current = null;
     };
-  }, [map, aoi, clip]);
+  }, [map, aoi, clip, onUnavailable]);
 
   useEffect(clip, [split, clip]);
+
+  if (failed) return null;
 
   const startDrag = (e: React.PointerEvent) => {
     e.preventDefault();

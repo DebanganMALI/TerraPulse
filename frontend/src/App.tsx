@@ -57,6 +57,7 @@ export function App() {
   const [loadingResults, setLoadingResults] = useState(false);
   const [alertsError, setAlertsError] = useState<string | null>(null);
   const [resultsError, setResultsError] = useState<string | null>(null);
+  const [noImagery, setNoImagery] = useState<string | null>(null);
   const [version, setVersion] = useState("0");
 
   const clearResults = () => {
@@ -152,8 +153,8 @@ export function App() {
   const hasRisk = !!risk?.features?.length;
   const running = job?.status === "queued" || job?.status === "running";
   const available: Record<keyof Layers, boolean> = {
-    swipe: !!aoi,
-    mask: !!aoi,
+    swipe: !!aoi && noImagery !== aoiId,
+    mask: !!aoi && noImagery !== aoiId,
     events: hasEvents,
     risk: hasRisk,
   };
@@ -182,8 +183,10 @@ export function App() {
             {layers.risk && hasRisk && <RiskLayer data={risk!} version={"r" + version} />}
           </MapView>
 
-          {map && aoi && layers.swipe && <BeforeAfterSwipe map={map} aoi={aoi} />}
-          {map && aoi && layers.mask && (
+          {map && aoi && layers.swipe && available.swipe && (
+            <BeforeAfterSwipe map={map} aoi={aoi} onUnavailable={setNoImagery} />
+          )}
+          {map && aoi && layers.mask && available.mask && (
             <ChangeMaskLayer map={map} aoi={aoi} version={version} />
           )}
 
