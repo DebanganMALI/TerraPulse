@@ -168,8 +168,7 @@ def _message(event: DetectedEvent, cells: list[RiskCell], severity: Severity) ->
 
     parts = [
         f"Detected {label} covering {event.area_km2:.2f} km² "
-        f"at {event.centroid[0]:.3f}°N, {event.centroid[1]:.3f}°E "
-        f"with {event.confidence * 100:.0f}% classifier confidence."
+        f"at {event.centroid[0]:.3f}°N, {event.centroid[1]:.3f}°E."
     ]
 
     named = {k: v for k, v in event.deltas.items() if v is not None}
