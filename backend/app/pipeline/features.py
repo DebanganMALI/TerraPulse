@@ -22,11 +22,37 @@ FEATURES = [
     "area_km2",
     "compactness",
     "elongation",
+    "rectangularity",
+    "solidity",
 ]
 
 
 def _f(v: float | None) -> float:
     return 0.0 if v is None else float(v)
+
+
+def rectangularity(poly) -> float:
+    """Area over its minimum rotated bounding rectangle.
+
+    A Kuttanad paddy polder is a bunded rectangle and scores near 1. Natural
+    inundation follows terrain and scores lower. The spectral rules cannot tell
+    those apart - both are new standing water - so this is the one feature that
+    gives the model something the rules do not have.
+    """
+    try:
+        rect = poly.minimum_rotated_rectangle
+        return round(float(poly.area / rect.area), 4) if rect.area > 0 else 0.0
+    except Exception:
+        return 0.0
+
+
+def solidity(poly) -> float:
+    # area over convex hull: ragged, many-fingered extents score low
+    try:
+        hull = poly.convex_hull
+        return round(float(poly.area / hull.area), 4) if hull.area > 0 else 0.0
+    except Exception:
+        return 0.0
 
 
 def shape_metrics(poly) -> tuple[float, float]:
@@ -56,6 +82,8 @@ def row(region: Region) -> dict[str, float]:
         "area_km2": float(region.area_km2),
         "compactness": compactness,
         "elongation": elongation,
+        "rectangularity": rectangularity(region.geometry),
+        "solidity": solidity(region.geometry),
     }
 
 

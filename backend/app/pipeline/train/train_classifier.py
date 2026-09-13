@@ -91,7 +91,9 @@ def main() -> int:
     print(f"  macro F1  {macro_f1:.3f}")
     print(classification_report(y, pred, zero_division=0))
 
-    circular = corrected == 0
+    # a handful of corrections does not make the labels independent of the
+    # rules; require a real share before dropping the caveat
+    circular = corrected < max(0.10 * len(y), 3)
     if circular and accuracy > 0.97:
         print("\n" + "!" * 70)
         print("This score is circular. The labels came from rule_label() and the")
@@ -121,9 +123,9 @@ def main() -> int:
             # the caveat travels with the number so it cannot surface bare in
             # model_info, the API response, or a slide
             "accuracy": (
-                f"{accuracy:.3f} (circular - reproduces rule labels, not ground truth)"
+                f"{accuracy:.3f} vs rule labels (circular - not ground truth)"
                 if circular
-                else f"{accuracy:.3f} ({corrected} labels hand-corrected)"
+                else f"{accuracy:.3f} ({corrected} of {len(y)} labels photo-interpreted)"
             ),
             "macro_f1": f"{macro_f1:.3f}",
             "n_samples": len(y),
