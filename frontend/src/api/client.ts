@@ -1,4 +1,6 @@
-const BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api/v1";
+// same-origin by default, proxied to the backend by vite (see vite.config.ts).
+// set VITE_API_BASE to an absolute url to point at someone else's machine.
+const BASE = import.meta.env.VITE_API_BASE ?? "/api/v1";
 export const STATIC_BASE = import.meta.env.VITE_STATIC_BASE ?? "";
 
 export class ApiError extends Error {

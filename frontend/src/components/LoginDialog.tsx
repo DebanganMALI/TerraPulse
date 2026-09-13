@@ -31,7 +31,7 @@ export function LoginDialog({ onSuccess }: { onSuccess: (r: LoginResponse) => vo
   return (
     <div className="modal-back">
       <form className="modal" onSubmit={submit}>
-        <h2>Bharat EarthShield</h2>
+        <h2>TerraPulse</h2>
         <p className="sub">Satellite change detection and forward risk monitoring</p>
 
         <div className="field">

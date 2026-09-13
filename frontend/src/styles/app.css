@@ -269,6 +269,88 @@ input:focus {
   padding-left: var(--s3);
 }
 
+/* ---------- map states ---------- */
+
+.map-state {
+  position: absolute;
+  inset: 0;
+  z-index: 550;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.map-state-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s1);
+  max-width: 320px;
+  padding: var(--s5) var(--s4);
+  text-align: center;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: rgba(19, 26, 34, 0.93);
+  backdrop-filter: blur(6px);
+  animation: fade 0.2s ease;
+}
+
+.map-state-card.interactive {
+  pointer-events: auto;
+}
+
+.map-state-card b {
+  font-weight: 600;
+}
+
+.map-state-card span {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.map-state-card .progress {
+  width: 180px;
+}
+
+.spinner {
+  width: 22px;
+  height: 22px;
+  margin-bottom: var(--s2);
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.banners {
+  position: absolute;
+  top: var(--s4);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 600;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  width: max-content;
+  max-width: min(460px, calc(100% - 32px));
+}
+
+.banner {
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: rgba(19, 26, 34, 0.94);
+  backdrop-filter: blur(6px);
+  padding: var(--s2) var(--s3);
+  line-height: 1.45;
+  animation: fade 0.2s ease;
+}
+
 /* ---------- swipe ---------- */
 
 .swipe-handle {

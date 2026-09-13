@@ -33,6 +33,7 @@ import { BeforeAfterSwipe } from "./components/BeforeAfterSwipe";
 import { ChangeMaskLayer } from "./components/ChangeMaskLayer";
 import { LayerPanel, type Layers } from "./components/LayerPanel";
 import { Legend } from "./components/Legend";
+import { MapState } from "./components/MapState";
 import { StatTiles } from "./components/StatTiles";
 import { AlertsPanel } from "./components/AlertsPanel";
 
@@ -55,6 +56,7 @@ export function App() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loadingResults, setLoadingResults] = useState(false);
   const [alertsError, setAlertsError] = useState<string | null>(null);
+  const [resultsError, setResultsError] = useState<string | null>(null);
   const [version, setVersion] = useState("0");
 
   const clearResults = () => {
@@ -63,12 +65,14 @@ export function App() {
     setAlerts(null);
     setStats(null);
     setAlertsError(null);
+    setResultsError(null);
   };
 
   const loadResults = useCallback(async (id: string) => {
     if (!id) return;
     setLoadingResults(true);
     setAlertsError(null);
+    setResultsError(null);
     const [ev, rk, al, st] = await Promise.allSettled([
       getEvents(id),
       getRisk(id, "moderate"),
@@ -76,6 +80,7 @@ export function App() {
       getStats(id),
     ]);
     setEvents(ev.status === "fulfilled" ? ev.value : null);
+    if (ev.status === "rejected") setResultsError((ev.reason as Error).message);
     setRisk(rk.status === "fulfilled" ? rk.value : null);
     setAlerts(al.status === "fulfilled" ? al.value : []);
     if (al.status === "rejected") setAlertsError((al.reason as Error).message);
@@ -145,6 +150,7 @@ export function App() {
 
   const hasEvents = !!events?.features?.length;
   const hasRisk = !!risk?.features?.length;
+  const running = job?.status === "queued" || job?.status === "running";
   const available: Record<keyof Layers, boolean> = {
     swipe: !!aoi,
     mask: !!aoi,
@@ -181,17 +187,33 @@ export function App() {
             <ChangeMaskLayer map={map} aoi={aoi} version={version} />
           )}
 
+          <MapState
+            running={running}
+            stage={job?.stage}
+            progress={job?.progress}
+            loading={loadingResults}
+            error={resultsError}
+            empty={!hasEvents && !hasRisk}
+            onRetry={() => loadResults(aoiId)}
+          />
+
           <LayerPanel layers={layers} onChange={setLayers} available={available} />
           <Legend mode={layers.risk && hasRisk ? "risk" : "events"} present={presentTypes} />
 
-          {jobError && (
-            <div
-              className="overlay-panel"
-              style={{ top: 16, left: "50%", transform: "translateX(-50%)", maxWidth: 420 }}
-            >
-              <span style={{ color: "var(--sev-high)" }}>{jobError}</span>
-            </div>
-          )}
+          <div className="banners">
+            {!healthy && (
+              <div className="banner">
+                <span style={{ color: "var(--sev-high)" }}>
+                  API unreachable — start the backend on port 8000, then sign out and back in.
+                </span>
+              </div>
+            )}
+            {jobError && (
+              <div className="banner">
+                <span style={{ color: "var(--sev-high)" }}>{jobError}</span>
+              </div>
+            )}
+          </div>
         </div>
 
         <aside className="sidebar">
