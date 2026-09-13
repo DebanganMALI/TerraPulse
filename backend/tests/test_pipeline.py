@@ -94,17 +94,18 @@ def test_known_water_patch_is_detected():
     band_map = {"blue": 1, "green": 2, "red": 3, "nir": 4, "swir": 5}
     before = indices.compute(_scene(None), band_map)
     after = indices.compute(_scene(np.s_[100:200, 100:200]), band_map)
-    mask, deltas = detect.detect_change(before, after)
+    mask, deltas, offsets = detect.detect_change(before, after, normalise=False)
     assert mask[150, 150] == 1
     assert mask[10, 10] == 0
     assert deltas["ndwi"][150, 150] > detect.THRESHOLDS["ndwi"]
+    assert offsets == {}
 
 
 def test_polygons_use_lon_lat_and_centroid_uses_lat_lon():
     band_map = {"blue": 1, "green": 2, "red": 3, "nir": 4, "swir": 5}
     before = indices.compute(_scene(None), band_map)
     after = indices.compute(_scene(np.s_[100:300, 100:300]), band_map)
-    mask, deltas = detect.detect_change(before, after)
+    mask, deltas, _ = detect.detect_change(before, after, normalise=False)
     regions = to_polygons(mask, from_bounds(*BBOX, SIZE, SIZE), deltas, before)
 
     assert regions
@@ -161,3 +162,27 @@ def test_progress_callback_failure_does_not_kill_the_run(synthetic_aoi):
 
     result = run_analysis(AnalysisRequest(aoi_id=synthetic_aoi, job_id="job_abc126"), explode)
     assert result.events
+
+
+def test_permanent_water_is_excluded_from_change():
+    band_map = {"blue": 1, "green": 2, "red": 3, "nir": 4, "swir": 5}
+    always_wet = np.s_[50:150, 50:150]
+    before_arr = _scene(always_wet)
+    after_arr = _scene(always_wet)
+    bi = indices.compute(before_arr, band_map)
+    ai = indices.compute(after_arr, band_map)
+
+    valid, stats = detect.valid_mask(before_arr, after_arr, band_map, bi, ai)
+    assert stats["permanent_water"] > 0.05
+    assert not valid[100, 100]
+
+
+def test_scene_wide_offset_is_removed_before_thresholding():
+    band_map = {"blue": 1, "green": 2, "red": 3, "nir": 4, "swir": 5}
+    bi = indices.compute(_scene(None), band_map)
+    # a uniform shift in every pixel is atmosphere, not change
+    ai = {k: (None if v is None else v + 0.30) for k, v in bi.items()}
+
+    mask, _, offsets = detect.detect_change(bi, ai)
+    assert mask.sum() == 0
+    assert offsets["ndwi"] == pytest.approx(0.30, abs=0.01)

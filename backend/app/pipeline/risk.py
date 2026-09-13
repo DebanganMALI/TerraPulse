@@ -162,7 +162,10 @@ def _load_model():
 def model_info() -> dict[str, str]:
     bundle = _load_model()
     if bundle is None:
-        return {"risk_model": "weighted_heuristic_v1", "risk_auc": "n/a (not a fitted model)"}
+        return {
+            "risk_model": "weighted_heuristic_v1 (within-AOI ranking)",
+            "risk_auc": "n/a - not a fitted model",
+        }
     return {
         "risk_model": str(bundle.get("version", "gb")),
         "risk_auc": str(bundle.get("auc", "unreported")),
@@ -178,6 +181,28 @@ def _normalise(name: str, value: float) -> float:
         # vegetation loss is a negative delta
         return float(np.clip(-value / scale, 0.0, 1.0))
     return float(np.clip(abs(value) / scale, 0.0, 1.0))
+
+
+# The weighted sum's absolute value depends on how hazy or how changed a
+# particular pair happens to be, so on one scene every cell lands in "high" and
+# on another every cell lands in "low" - either way the heat layer reads as
+# broken. Ranking within the AOI makes the score a *relative* propensity, which
+# is what this is honestly measuring. Describe it that way: a within-AOI risk
+# ranking calibrated per deployment, not an absolute probability.
+CALIBRATION_EXPONENT = 1.8
+
+
+def _calibrate(raw: list[float]) -> list[float]:
+    arr = np.asarray(raw, dtype="float64")
+    if arr.size == 0:
+        return []
+    if float(arr.max() - arr.min()) < 1e-9:
+        return [0.0] * arr.size
+    order = arr.argsort()
+    ranks = np.empty(arr.size, dtype="float64")
+    ranks[order] = np.arange(arr.size)
+    pct = ranks / max(arr.size - 1, 1)
+    return [float(v) for v in np.clip(pct ** CALIBRATION_EXPONENT, 0.0, 1.0)]
 
 
 def _primary_risk(cell_geom, events: list[DetectedEvent]) -> EventType:
@@ -286,10 +311,11 @@ def score_risk(
 
     if model is None:
         importances = dict(HEURISTIC_WEIGHTS)
-        scores = []
+        raw_scores = []
         for _, _, feats in staged:
             s = sum(w * _normalise(name, feats[name]) for name, w in HEURISTIC_WEIGHTS.items())
-            scores.append(float(np.clip(s / sum(HEURISTIC_WEIGHTS.values()), 0.0, 1.0)))
+            raw_scores.append(s / sum(HEURISTIC_WEIGHTS.values()))
+        scores = _calibrate(raw_scores)
 
     for (cell_id, geom, feats), score in zip(staged, scores, strict=True):
         # weight each importance by this cell's normalised value so two red cells
