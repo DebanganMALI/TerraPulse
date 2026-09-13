@@ -36,7 +36,7 @@ export function TopBar({
     <header className="topbar">
       <div className="brand">
         <Logo />
-        EarthShield
+        TerraPulse
       </div>
 
       <select value={aoiId} onChange={(e) => onAoi(e.target.value)} disabled={running}>
