@@ -1,0 +1,35 @@
+:root {
+  --bg: #0b0f14;
+  --panel: #131a22;
+  --panel-2: #182029;
+  --border: #1f2a35;
+  --text: #e6edf3;
+  --muted: #8b98a5;
+  --accent: #2f81f7;
+
+  --sev-info: #58a6ff;
+  --sev-low: #3fb950;
+  --sev-moderate: #d29922;
+  --sev-high: #f85149;
+  --sev-severe: #a32b2b;
+
+  --ev-flood: #2f81f7;
+  --ev-deforestation: #db6d28;
+  --ev-wildfire_burn: #f85149;
+  --ev-urban_expansion: #a371f7;
+  --ev-water_recession: #39c5cf;
+  --ev-no_change: #6e7681;
+
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+
+  --r: 8px;
+  --r-sm: 6px;
+
+  --fs-lg: 20px;
+  --fs-md: 13px;
+  --fs-sm: 11px;
+}
