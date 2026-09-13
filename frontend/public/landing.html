@@ -1,0 +1,776 @@
+<!doctype html>
+<html lang="en" class="scroll-smooth">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Framewise — Your intelligent cinematography guide</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Manrope:wght@300;400;500;600&display=swap" rel="stylesheet" />
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: { ink: '#140a05', ink2: '#1a0c05' },
+      fontFamily: {
+        sans: ['Manrope', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        mono: ['"DM Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+      },
+    },
+  },
+};
+</script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/iconify-icon@2/dist/iconify-icon.min.js"></script>
+
+<style>
+  html, body { background: #140a05; }
+  body { font-family: 'Manrope', sans-serif; color: #fff; overflow-x: hidden; }
+  ::selection { background: #fdba74; color: #1a0c05; }
+
+  /* the native cursor is replaced by the 3-layer system below */
+  @media (pointer: fine) { body, a, button, [data-cursor] { cursor: none; } }
+
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-track { background: #140a05; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 8px; }
+
+  .word-mask { display: inline-block; overflow: hidden; vertical-align: bottom; }
+  .word-mask > span { display: inline-block; will-change: transform; }
+
+  .marquee-track { display: flex; width: max-content; will-change: transform; }
+
+  .tilt-card { transform-style: preserve-3d; will-change: transform; }
+  .image-hover { overflow: hidden; }
+  .image-hover img { will-change: transform; transform: scale(1.12); }
+
+  .faq-content { height: 0; overflow: hidden; }
+
+  .focus-frame { box-shadow: 0 0 0 1px rgba(253,186,116,.55); }
+  .focus-frame::before, .focus-frame::after,
+  .focus-frame > i::before, .focus-frame > i::after {
+    content: ''; position: absolute; width: 12px; height: 12px; border: 1px solid #fdba74;
+  }
+  .focus-frame::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+  .focus-frame::after  { top: -1px; right: -1px; border-left: 0; border-bottom: 0; }
+  .focus-frame > i::before { bottom: -1px; left: -1px; border-right: 0; border-top: 0; }
+  .focus-frame > i::after  { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+
+  .orbit-ring { animation: spin 1.1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .orbit-ring { animation: none; }
+  }
+</style>
+</head>
+
+<body class="bg-ink font-sans antialiased">
+
+<!-- ══ 1. WebGL aura (z-0) ══ -->
+<canvas id="aura" class="pointer-events-none fixed inset-0 z-0 h-full w-full opacity-50"></canvas>
+
+<!-- ══ 2. Grain overlay (z-2) ══ -->
+<div class="pointer-events-none fixed inset-0 z-[2] opacity-[0.035]" aria-hidden="true">
+  <svg class="h-full w-full">
+    <filter id="grain-filter">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="4" stitchTiles="stitch" />
+    </filter>
+    <rect width="100%" height="100%" filter="url(#grain-filter)" />
+  </svg>
+</div>
+
+<!-- ══ Scroll progress ══ -->
+<div class="pointer-events-none fixed inset-x-0 top-0 z-[60] h-0.5 bg-white/5">
+  <i id="progress" class="block h-full w-full origin-left scale-x-0 bg-orange-300"></i>
+</div>
+
+<!-- ══ 5. Custom cursor (94 / 95 / 96) ══ -->
+<div id="c-ring" class="pointer-events-none fixed left-0 top-0 z-[94] hidden h-9 w-9 -translate-x-1/2 -translate-y-1/2 rounded-full border border-orange-300/60 md:block"></div>
+<div id="c-dot"  class="pointer-events-none fixed left-0 top-0 z-[95] hidden h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-orange-300 md:block"></div>
+<div id="c-label" class="pointer-events-none fixed left-0 top-0 z-[96] hidden -translate-x-1/2 translate-y-6 whitespace-nowrap rounded-full bg-orange-300 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-ink2 opacity-0 md:block"></div>
+
+<!-- ══ 6. Preloader (z-100) ══ -->
+<div id="preloader" class="fixed inset-0 z-[100] grid place-items-center bg-ink">
+  <div class="flex flex-col items-center gap-7">
+    <div class="relative h-14 w-14">
+      <span class="absolute inset-0 rounded-full border border-white/10"></span>
+      <span class="orbit-ring absolute inset-0 rounded-full border border-transparent border-t-orange-300"></span>
+      <span class="absolute left-1/2 top-1/2 h-1 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-orange-300/70"></span>
+    </div>
+    <div class="overflow-hidden">
+      <div id="pre-word" class="font-mono text-[11px] uppercase tracking-[0.42em] text-white/70">Framewise</div>
+    </div>
+    <div class="h-px w-44 bg-white/10">
+      <i id="pre-bar" class="block h-full w-full origin-left scale-x-0 bg-orange-300"></i>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 4. Header ══ -->
+<header id="header" class="fixed inset-x-0 top-0 z-50 border-b border-transparent backdrop-blur-xl transition-colors duration-300">
+  <div class="mx-auto flex max-w-[1400px] items-center justify-between px-6 py-5 lg:px-10">
+    <a href="#top" class="magnetic flex items-center gap-2.5" data-cursor="Top">
+      <span class="grid h-7 w-7 place-items-center rounded-[7px] border border-orange-300/40 bg-orange-300/10">
+        <span class="h-1.5 w-1.5 rounded-full bg-orange-300"></span>
+      </span>
+      <span class="font-mono text-[13px] uppercase tracking-[0.22em]">Framewise</span>
+    </a>
+
+    <nav class="hidden items-center gap-9 font-mono text-[11px] uppercase tracking-[0.18em] text-white/60 md:flex">
+      <a href="#platform"  class="transition hover:text-orange-300">Platform</a>
+      <a href="#solutions" class="transition hover:text-orange-300">Solutions</a>
+      <a href="#toolkit"   class="transition hover:text-orange-300">Toolkit</a>
+      <a href="#faq"       class="transition hover:text-orange-300">FAQ</a>
+    </nav>
+
+    <a href="#cta" class="magnetic group flex items-center gap-2 rounded-full border border-white/15 px-4 py-2 font-mono text-[11px] uppercase tracking-[0.18em] transition hover:border-orange-300/60 hover:text-orange-300" data-cursor="Request">
+      Request access
+      <iconify-icon icon="solar:arrow-right-up-linear" class="text-sm transition-transform group-hover:translate-x-0.5"></iconify-icon>
+    </a>
+  </div>
+</header>
+
+<!-- ══ 3. Main content ══ -->
+<main id="top" class="relative z-10">
+
+  <!-- ─── SECTION 1 · HERO / PLATFORM ─── -->
+  <section id="platform" class="pt-36 pb-24 lg:pt-44">
+    <div class="mx-auto max-w-[1400px] px-6 lg:px-10">
+
+      <div class="mx-auto max-w-4xl text-center">
+        <div class="reveal-fade mb-7 inline-flex items-center gap-2.5 rounded-full border border-white/10 bg-white/[0.03] px-3.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.24em] text-white/60">
+          <span class="h-1 w-1 rounded-full bg-orange-300"></span>
+          AI cinematography · v2.4
+        </div>
+
+        <h1 class="reveal-words text-[2.7rem] font-light leading-[1.06] tracking-[-0.02em] sm:text-6xl lg:text-[4.6rem]">
+          Your intelligent cinematography guide
+        </h1>
+
+        <p class="reveal-fade mx-auto mt-7 max-w-xl text-[15px] font-light leading-relaxed text-white/60">
+          Framewise reads the frame in real time — composition, exposure, focus, continuity — and tells you
+          what to change before you roll, not in the edit.
+        </p>
+
+        <div class="reveal-fade mt-10 flex flex-wrap items-center justify-center gap-3">
+          <a href="#solutions" class="magnetic group inline-flex items-center gap-2 rounded-full bg-orange-300 px-6 py-3 font-mono text-[11px] uppercase tracking-[0.18em] text-ink2 transition hover:bg-orange-200" data-cursor="Explore">
+            Explore the platform
+            <iconify-icon icon="solar:arrow-right-up-linear" class="text-base transition-transform group-hover:translate-x-0.5"></iconify-icon>
+          </a>
+          <a href="#toolkit" class="magnetic inline-flex items-center gap-2 rounded-full border border-white/15 px-6 py-3 font-mono text-[11px] uppercase tracking-[0.18em] text-white/80 transition hover:border-orange-300/60 hover:text-orange-300" data-cursor="Watch">
+            <iconify-icon icon="solar:play-bold" class="text-xs text-orange-300"></iconify-icon>
+            Watch the reel
+          </a>
+        </div>
+      </div>
+
+      <!-- viewfinder -->
+      <div class="reveal-fade relative mt-16 lg:mt-20">
+        <div class="image-hover relative aspect-[16/9] w-full overflow-hidden rounded-2xl border border-white/10 bg-black/40">
+          <video
+            id="hero-video"
+            class="h-full w-full object-cover"
+            poster="https://hoirqrkdgbmvpwutwuwj.supabase.co/storage/v1/object/public/assets/assets/2ac7895d-242e-496e-8f7c-3600c6cf80b6_3840w.png"
+            muted playsinline preload="metadata" loop>
+            <source src="https://hoirqrkdgbmvpwutwuwj.supabase.co/storage/v1/object/public/generated-videos/2e815afb-cac1-4c01-90e1-cf3810246e35/1788781992660-34271847-4aac-4437-9a3d-dc9700a9681f.mp4" type="video/mp4" />
+          </video>
+
+          <!-- mock viewfinder chrome -->
+          <div class="pointer-events-none absolute inset-0">
+            <div class="absolute inset-x-0 top-0 flex items-center justify-between px-5 py-4 font-mono text-[10px] uppercase tracking-[0.2em] text-white/70">
+              <span class="flex items-center gap-2"><span class="h-1.5 w-1.5 rounded-full bg-red-400"></span>REC 00:14:22</span>
+              <span class="hidden sm:block">24 FPS · 4K · LOG3</span>
+              <span>f/2.0 · 1/50 · ISO 800</span>
+            </div>
+
+            <div class="focus-frame absolute left-[22%] top-[32%] h-[34%] w-[26%] rounded-sm">
+              <i></i>
+            </div>
+
+            <div class="guidance-card absolute bottom-6 left-5 w-60 rounded-xl border border-white/10 bg-black/55 p-3.5 backdrop-blur-md sm:left-8">
+              <div class="flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.2em] text-orange-300">
+                <iconify-icon icon="solar:magic-stick-3-linear" class="text-sm"></iconify-icon>
+                Guidance
+              </div>
+              <p class="mt-2 text-[12px] font-light leading-relaxed text-white/75">
+                Subject sits on the centre axis. Shift camera left ~8° to land the eyeline on the right third.
+              </p>
+              <div class="mt-3 h-px w-full bg-white/10">
+                <i class="block h-full w-2/3 bg-orange-300/70"></i>
+              </div>
+            </div>
+
+            <div class="absolute inset-x-0 bottom-0 flex items-center justify-between px-5 py-4 font-mono text-[10px] uppercase tracking-[0.2em] text-white/50">
+              <span>Composition 92</span>
+              <span class="hidden sm:block">Exposure +0.3 EV</span>
+              <span>Focus lock</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- readouts -->
+      <div class="reveal-fade mt-12 grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-white/10 bg-white/10 lg:grid-cols-4">
+        <div class="bg-ink px-5 py-6"><div class="font-mono text-2xl font-light text-orange-300">18ms</div><div class="mt-1.5 font-mono text-[10px] uppercase tracking-[0.2em] text-white/45">Frame latency</div></div>
+        <div class="bg-ink px-5 py-6"><div class="font-mono text-2xl font-light text-orange-300">40+</div><div class="mt-1.5 font-mono text-[10px] uppercase tracking-[0.2em] text-white/45">Rules tracked</div></div>
+        <div class="bg-ink px-5 py-6"><div class="font-mono text-2xl font-light text-orange-300">6K</div><div class="mt-1.5 font-mono text-[10px] uppercase tracking-[0.2em] text-white/45">Max ingest</div></div>
+        <div class="bg-ink px-5 py-6"><div class="font-mono text-2xl font-light text-orange-300">99.2%</div><div class="mt-1.5 font-mono text-[10px] uppercase tracking-[0.2em] text-white/45">Focus recall</div></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ─── SECTION 2 · MARQUEE ─── -->
+  <section class="border-y border-white/[0.07] py-6">
+    <div class="overflow-hidden">
+      <div class="marquee-track font-mono text-[11px] uppercase tracking-[0.28em] text-white/35">
+        <div class="marquee-half flex shrink-0 items-center gap-8 pr-8">
+          <span>Composition intelligence</span><span class="text-orange-300">&#10022;</span>
+          <span>Exposure awareness</span><span class="text-orange-300">&#10022;</span>
+          <span>Focus tracking</span><span class="text-orange-300">&#10022;</span>
+          <span>Shot continuity</span><span class="text-orange-300">&#10022;</span>
+          <span>Lighting analysis</span><span class="text-orange-300">&#10022;</span>
+          <span>Lens guidance</span><span class="text-orange-300">&#10022;</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── SECTION 3 · SOLUTIONS ─── -->
+  <section id="solutions" class="py-24 lg:py-32">
+    <div class="mx-auto max-w-[1400px] px-6 lg:px-10">
+
+      <div class="grid gap-8 lg:grid-cols-[1.65fr_0.75fr] lg:items-end">
+        <div>
+          <div class="reveal-fade mb-5 font-mono text-[10px] uppercase tracking-[0.24em] text-orange-300">02 — Solutions</div>
+          <h2 class="reveal-words text-[2rem] font-light leading-[1.12] tracking-[-0.02em] sm:text-4xl lg:text-[3.1rem]">
+            Built for the moment before the take
+          </h2>
+        </div>
+        <p class="reveal-fade text-[14px] font-light leading-relaxed text-white/55">
+          Every module runs on-device against the live signal path, so guidance arrives while you can still
+          act on it.
+        </p>
+      </div>
+
+      <div class="mt-14 grid gap-4">
+
+        <!-- full-width hero card -->
+        <article class="tilt-card group grid gap-8 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.02] p-6 lg:grid-cols-[1.35fr_0.65fr] lg:p-8" data-cursor="Viewfinder">
+          <div class="image-hover relative aspect-[16/10] overflow-hidden rounded-xl border border-white/10">
+            <img src="https://hoirqrkdgbmvpwutwuwj.supabase.co/storage/v1/object/public/assets/assets/451c4f08-0842-4f8f-b448-7968e1f60321_3840w.png" alt="Framewise viewfinder overlay" class="h-full w-full object-cover" loading="lazy" />
+          </div>
+          <div class="flex flex-col justify-center">
+            <div class="font-mono text-[10px] uppercase tracking-[0.22em] text-orange-300">Live viewfinder</div>
+            <h3 class="mt-4 text-2xl font-light leading-snug tracking-[-0.01em] lg:text-3xl">Guidance layered over the frame you are already watching</h3>
+            <p class="mt-4 text-[14px] font-light leading-relaxed text-white/55">
+              Thirds, headroom, horizon drift and eyeline all resolve as a single overlay. No second monitor,
+              no second operator, no pause in the take.
+            </p>
+            <div class="mt-7 flex flex-wrap gap-2 font-mono text-[10px] uppercase tracking-[0.18em] text-white/45">
+              <span class="rounded-full border border-white/10 px-3 py-1.5">SDI &amp; HDMI</span>
+              <span class="rounded-full border border-white/10 px-3 py-1.5">On-device</span>
+              <span class="rounded-full border border-white/10 px-3 py-1.5">18ms</span>
+            </div>
+          </div>
+        </article>
+
+        <!-- three-up -->
+        <div class="grid gap-4 lg:grid-cols-3">
+          <article class="tilt-card rounded-2xl border border-white/10 bg-white/[0.02] p-6 lg:p-7" data-cursor="Compose">
+            <iconify-icon icon="solar:crop-minimalistic-linear" class="text-2xl text-orange-300"></iconify-icon>
+            <h3 class="mt-5 text-xl font-light tracking-[-0.01em]">Composition engine</h3>
+            <p class="mt-3 text-[13px] font-light leading-relaxed text-white/55">
+              Scores balance, negative space and lead room against the shot's stated intent, then names the
+              single correction that moves the score most.
+            </p>
+          </article>
+
+          <article class="tilt-card rounded-2xl border border-white/10 bg-white/[0.02] p-6 lg:p-7" data-cursor="Expose">
+            <iconify-icon icon="solar:sun-linear" class="text-2xl text-orange-300"></iconify-icon>
+            <h3 class="mt-5 text-xl font-light tracking-[-0.01em]">Exposure awareness</h3>
+            <p class="mt-3 text-[13px] font-light leading-relaxed text-white/55">
+              Reads the log curve rather than the display, so clipping warnings reflect what the sensor
+              recorded and not what the monitor shows.
+            </p>
+          </article>
+
+          <article class="tilt-card rounded-2xl border border-white/10 bg-white/[0.02] p-6 lg:p-7" data-cursor="Match">
+            <iconify-icon icon="solar:layers-minimalistic-linear" class="text-2xl text-orange-300"></iconify-icon>
+            <h3 class="mt-5 text-xl font-light tracking-[-0.01em]">Continuity memory</h3>
+            <p class="mt-3 text-[13px] font-light leading-relaxed text-white/55">
+              Holds every setup from the day and flags the axis break, the lens mismatch or the shifted key
+              before it reaches the assembly.
+            </p>
+          </article>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── SECTION 4 · TOOLKIT / FEATURES ─── -->
+  <section id="toolkit" class="py-24 lg:py-32">
+    <div class="mx-auto max-w-[1400px] px-6 lg:px-10">
+
+      <div class="max-w-2xl">
+        <div class="reveal-fade mb-5 font-mono text-[10px] uppercase tracking-[0.24em] text-orange-300">03 — Toolkit</div>
+        <h2 class="reveal-words text-[2rem] font-light leading-[1.12] tracking-[-0.02em] sm:text-4xl lg:text-[3.1rem]">
+          Four instruments, one signal path
+        </h2>
+      </div>
+
+      <div class="mt-16 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+
+        <article class="feature-card group" data-cursor="Frame">
+          <div class="image-hover relative aspect-[4/5] overflow-hidden rounded-xl border border-white/10">
+            <img data-feature-img src="https://hoirqrkdgbmvpwutwuwj.supabase.co/storage/v1/object/public/assets/assets/2ac7895d-242e-496e-8f7c-3600c6cf80b6_3840w.png" alt="Frame module" class="h-full w-full object-cover" loading="lazy" />
+          </div>
+          <div class="mt-5 font-mono text-[10px] uppercase tracking-[0.2em] text-white/40">01 / Frame</div>
+          <h3 class="mt-2.5 text-lg font-light tracking-[-0.01em]">Rule-of-thirds solver</h3>
+          <p class="mt-2 text-[13px] font-light leading-relaxed text-white/50">Suggests the smallest pan that lands your subject on a power point.</p>
+        </article>
+
+        <article class="feature-card group lg:translate-y-8" data-cursor="Expose">
+          <div class="image-hover relative aspect-[4/5] overflow-hidden rounded-xl border border-white/10">
+            <img data-feature-img src="https://hoirqrkdgbmvpwutwuwj.supabase.co/storage/v1/object/public/assets/assets/451c4f08-0842-4f8f-b448-7968e1f60321_3840w.png" alt="Expose module" class="h-full w-full object-cover" loading="lazy" />
+          </div>
+          <div class="mt-5 font-mono text-[10px] uppercase tracking-[0.2em] text-white/40">02 / Expose</div>
+          <h3 class="mt-2.5 text-lg font-light tracking-[-0.01em]">Latitude meter</h3>
+          <p class="mt-2 text-[13px] font-light leading-relaxed text-white/50">Shows how many stops remain above the highlight before the roll-off.</p>
+        </article>
+
+        <article class="feature-card group" data-cursor="Focus">
+          <div class="image-hover relative aspect-[4/5] overflow-hidden rounded-xl border border-white/10">
+            <img data-feature-img src="https://hoirqrkdgbmvpwutwuwj.supabase.co/storage/v1/object/public/assets/assets/2ac7895d-242e-496e-8f7c-3600c6cf80b6_3840w.png" alt="Focus module" class="h-full w-full object-cover" loading="lazy" />
+          </div>
+          <div class="mt-5 font-mono text-[10px] uppercase tracking-[0.2em] text-white/40">03 / Focus</div>
+          <h3 class="mt-2.5 text-lg font-light tracking-[-0.01em]">Plane tracker</h3>
+          <p class="mt-2 text-[13px] font-light leading-relaxed text-white/50">Follows the intended plane through movement and calls the drift early.</p>
+        </article>
+
+        <article class="feature-card group lg:translate-y-16" data-cursor="Grade">
+          <div class="image-hover relative aspect-[4/5] overflow-hidden rounded-xl border border-white/10">
+            <img data-feature-img src="https://hoirqrkdgbmvpwutwuwj.supabase.co/storage/v1/object/public/assets/assets/451c4f08-0842-4f8f-b448-7968e1f60321_3840w.png" alt="Grade module" class="h-full w-full object-cover" loading="lazy" />
+          </div>
+          <div class="mt-5 font-mono text-[10px] uppercase tracking-[0.2em] text-white/40">04 / Grade</div>
+          <h3 class="mt-2.5 text-lg font-light tracking-[-0.01em]">Look continuity</h3>
+          <p class="mt-2 text-[13px] font-light leading-relaxed text-white/50">Carries the show LUT across setups and reports where it stops holding.</p>
+        </article>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── SECTION 5 · FAQ ─── -->
+  <section id="faq" class="py-24 lg:py-32">
+    <div class="mx-auto max-w-[1400px] px-6 lg:px-10">
+      <div class="grid gap-12 lg:grid-cols-[0.75fr_1.65fr]">
+
+        <div>
+          <div class="reveal-fade mb-5 font-mono text-[10px] uppercase tracking-[0.24em] text-orange-300">04 — FAQ</div>
+          <h2 class="reveal-words text-[2rem] font-light leading-[1.12] tracking-[-0.02em] sm:text-4xl">
+            Questions from set
+          </h2>
+        </div>
+
+        <div class="divide-y divide-white/10 border-y border-white/10">
+
+          <div class="faq-item">
+            <button class="faq-trigger flex w-full items-center justify-between gap-6 py-6 text-left" data-cursor="Open">
+              <span class="text-[15px] font-light lg:text-lg">Does it need a dedicated monitor or box?</span>
+              <iconify-icon icon="solar:add-circle-linear" class="faq-icon shrink-0 text-2xl text-orange-300"></iconify-icon>
+            </button>
+            <div class="faq-content"><p class="pb-6 pr-12 text-[14px] font-light leading-relaxed text-white/55">No. Framewise taps the existing SDI or HDMI loop-out and renders into the feed you are already using. If you have a director's monitor, it appears there too.</p></div>
+          </div>
+
+          <div class="faq-item">
+            <button class="faq-trigger flex w-full items-center justify-between gap-6 py-6 text-left" data-cursor="Open">
+              <span class="text-[15px] font-light lg:text-lg">Is footage sent anywhere for analysis?</span>
+              <iconify-icon icon="solar:add-circle-linear" class="faq-icon shrink-0 text-2xl text-orange-300"></iconify-icon>
+            </button>
+            <div class="faq-content"><p class="pb-6 pr-12 text-[14px] font-light leading-relaxed text-white/55">Inference runs on the unit. Nothing leaves the cart unless you explicitly export a shot report, and those carry stills only at the resolution you choose.</p></div>
+          </div>
+
+          <div class="faq-item">
+            <button class="faq-trigger flex w-full items-center justify-between gap-6 py-6 text-left" data-cursor="Open">
+              <span class="text-[15px] font-light lg:text-lg">Which cameras are supported?</span>
+              <iconify-icon icon="solar:add-circle-linear" class="faq-icon shrink-0 text-2xl text-orange-300"></iconify-icon>
+            </button>
+            <div class="faq-content"><p class="pb-6 pr-12 text-[14px] font-light leading-relaxed text-white/55">Anything with a clean 1080p or greater output. Log curve profiles ship for the common ARRI, RED, Sony and Blackmagic bodies; others fall back to a generic scene-linear read.</p></div>
+          </div>
+
+          <div class="faq-item">
+            <button class="faq-trigger flex w-full items-center justify-between gap-6 py-6 text-left" data-cursor="Open">
+              <span class="text-[15px] font-light lg:text-lg">Will it fight my operator's instincts?</span>
+              <iconify-icon icon="solar:add-circle-linear" class="faq-icon shrink-0 text-2xl text-orange-300"></iconify-icon>
+            </button>
+            <div class="faq-content"><p class="pb-6 pr-12 text-[14px] font-light leading-relaxed text-white/55">It is advisory and silent by default. You set the intent for a setup; guidance only surfaces where the frame departs from that intent, and a single tap mutes it for the take.</p></div>
+          </div>
+
+          <div class="faq-item">
+            <button class="faq-trigger flex w-full items-center justify-between gap-6 py-6 text-left" data-cursor="Open">
+              <span class="text-[15px] font-light lg:text-lg">How long is setup on the day?</span>
+              <iconify-icon icon="solar:add-circle-linear" class="faq-icon shrink-0 text-2xl text-orange-300"></iconify-icon>
+            </button>
+            <div class="faq-content"><p class="pb-6 pr-12 text-[14px] font-light leading-relaxed text-white/55">Around four minutes. Power, loop the signal, pick the body profile. Continuity memory begins populating from the first slate.</p></div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── CTA + FOOTER ─── -->
+  <section id="cta" class="py-24 lg:py-32">
+    <div class="mx-auto max-w-[1400px] px-6 lg:px-10">
+      <div class="tilt-card rounded-2xl border border-white/10 bg-white/[0.02] px-6 py-16 text-center lg:px-16 lg:py-24">
+        <h2 class="reveal-words mx-auto max-w-3xl text-[2rem] font-light leading-[1.1] tracking-[-0.02em] sm:text-4xl lg:text-[3.4rem]">
+          Bring it to your next build day
+        </h2>
+        <p class="reveal-fade mx-auto mt-6 max-w-lg text-[14px] font-light leading-relaxed text-white/55">
+          Limited units are going out to productions through the autumn. Tell us what you shoot and we will
+          send a profile that matches it.
+        </p>
+        <a href="#top" class="magnetic mt-10 inline-flex items-center gap-2 rounded-full bg-orange-300 px-7 py-3.5 font-mono text-[11px] uppercase tracking-[0.18em] text-ink2 transition hover:bg-orange-200" data-cursor="Request">
+          Request access
+          <iconify-icon icon="solar:arrow-right-up-linear" class="text-base"></iconify-icon>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <footer class="border-t border-white/[0.07] py-10">
+    <div class="mx-auto flex max-w-[1400px] flex-col items-center justify-between gap-4 px-6 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35 sm:flex-row lg:px-10">
+      <span>Framewise — intelligent cinematography</span>
+      <span>&copy; 2026 · All rights reserved</span>
+    </div>
+  </footer>
+
+</main>
+
+<script>
+/* ──────────────────────────────────────────────────────────────
+   FEATURE IMAGE INVENTORY
+   Replace these four with the exact Supabase URLs (f3e16f3e…,
+   0ab1c7fe…, b281cd19…, 0e4dbdc1…). Order matches the cards.
+   ────────────────────────────────────────────────────────────── */
+const FEATURE_IMAGES = [
+  "https://hoirqrkdgbmvpwutwuwj.supabase.co/storage/v1/object/public/assets/assets/2ac7895d-242e-496e-8f7c-3600c6cf80b6_3840w.png",
+  "https://hoirqrkdgbmvpwutwuwj.supabase.co/storage/v1/object/public/assets/assets/451c4f08-0842-4f8f-b448-7968e1f60321_3840w.png",
+  "https://hoirqrkdgbmvpwutwuwj.supabase.co/storage/v1/object/public/assets/assets/2ac7895d-242e-496e-8f7c-3600c6cf80b6_3840w.png",
+  "https://hoirqrkdgbmvpwutwuwj.supabase.co/storage/v1/object/public/assets/assets/451c4f08-0842-4f8f-b448-7968e1f60321_3840w.png",
+];
+document.querySelectorAll("[data-feature-img]").forEach((img, i) => {
+  if (FEATURE_IMAGES[i]) img.src = FEATURE_IMAGES[i];
+});
+
+gsap.registerPlugin(ScrollTrigger);
+const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/* ── split headings into masked words ── */
+function splitWords(el) {
+  const words = el.textContent.trim().split(/\s+/);
+  el.innerHTML = words
+    .map((w) => '<span class="word-mask"><span>' + w + "</span></span>")
+    .join(" ");
+  return el.querySelectorAll(".word-mask > span");
+}
+document.querySelectorAll(".reveal-words").forEach((h) => {
+  const spans = splitWords(h);
+  gsap.set(spans, { yPercent: 115 });
+  gsap.to(spans, {
+    yPercent: 0,
+    duration: 1,
+    ease: "power4.out",
+    stagger: 0.055,
+    scrollTrigger: { trigger: h, start: "top 85%" },
+  });
+});
+
+/* ── generic fade-ups ── */
+gsap.utils.toArray(".reveal-fade").forEach((el) => {
+  gsap.from(el, {
+    y: 24,
+    autoAlpha: 0,
+    duration: 0.9,
+    ease: "power3.out",
+    scrollTrigger: { trigger: el, start: "top 88%" },
+  });
+});
+
+/* ── preloader ── */
+const pre = gsap.timeline({ defaults: { ease: "power3.out" } });
+pre.from("#pre-word", { yPercent: 115, duration: 0.7 })
+   .to("#pre-bar", { scaleX: 1, duration: 1.3, ease: "power2.inOut" }, "-=0.35")
+   .to("#pre-word", { yPercent: -115, duration: 0.45, ease: "power3.in" }, "-=0.15")
+   .to("#preloader", { autoAlpha: 0, duration: 0.6 }, "-=0.05")
+   .set("#preloader", { display: "none" });
+
+/* ── scroll progress ── */
+gsap.to("#progress", {
+  scaleX: 1,
+  ease: "none",
+  scrollTrigger: {
+    trigger: document.documentElement,
+    start: "top top",
+    end: "bottom bottom",
+    scrub: 0.3,
+  },
+});
+
+/* ── header state ── */
+const header = document.getElementById("header");
+ScrollTrigger.create({
+  start: 40,
+  onUpdate: (self) => {
+    const on = self.scroll() > 40;
+    header.classList.toggle("border-white/10", on);
+    header.classList.toggle("bg-ink/70", on);
+  },
+});
+
+/* ── marquee ── */
+const track = document.querySelector(".marquee-track");
+if (track) {
+  track.appendChild(track.querySelector(".marquee-half").cloneNode(true));
+  gsap.to(track, { xPercent: -50, duration: 24, ease: "none", repeat: -1 });
+}
+
+/* ── parallax inside .image-hover ── */
+gsap.utils.toArray(".image-hover img").forEach((img) => {
+  gsap.fromTo(
+    img,
+    { yPercent: -7 },
+    {
+      yPercent: 7,
+      ease: "none",
+      scrollTrigger: {
+        trigger: img.closest(".image-hover"),
+        start: "top bottom",
+        end: "bottom top",
+        scrub: true,
+      },
+    }
+  );
+});
+
+/* ── viewfinder chrome ── */
+gsap.to(".focus-frame", {
+  scale: 1.04,
+  opacity: 0.65,
+  duration: 2.2,
+  ease: "sine.inOut",
+  repeat: -1,
+  yoyo: true,
+  transformOrigin: "center",
+});
+gsap.to(".guidance-card", {
+  y: -10,
+  duration: 3.4,
+  ease: "sine.inOut",
+  repeat: -1,
+  yoyo: true,
+});
+
+/* ── hero video: loop-in-view at 35% ── */
+const video = document.getElementById("hero-video");
+if (video) {
+  new IntersectionObserver(
+    (entries) => {
+      entries.forEach((e) => {
+        if (e.isIntersecting) video.play().catch(() => {});
+        else video.pause();
+      });
+    },
+    { threshold: 0.35 }
+  ).observe(video);
+}
+
+/* ── tilt cards (±3°) ── */
+document.querySelectorAll(".tilt-card").forEach((card) => {
+  card.addEventListener("mousemove", (e) => {
+    const r = card.getBoundingClientRect();
+    const px = (e.clientX - r.left) / r.width - 0.5;
+    const py = (e.clientY - r.top) / r.height - 0.5;
+    gsap.to(card, {
+      rotateY: px * 6,
+      rotateX: -py * 6,
+      transformPerspective: 1200,
+      duration: 0.5,
+      ease: "power3.out",
+    });
+  });
+  card.addEventListener("mouseleave", () =>
+    gsap.to(card, { rotateX: 0, rotateY: 0, duration: 0.8, ease: "power3.out" })
+  );
+});
+
+/* ── feature card image scale ── */
+document.querySelectorAll(".feature-card").forEach((card) => {
+  const img = card.querySelector("img");
+  card.addEventListener("mouseenter", () =>
+    gsap.to(img, { scale: 1.1, duration: 0.7, ease: "power3.out" })
+  );
+  card.addEventListener("mouseleave", () =>
+    gsap.to(img, { scale: 1.12, duration: 0.7, ease: "power3.out" })
+  );
+});
+
+/* ── magnetic buttons ── */
+document.querySelectorAll(".magnetic").forEach((el) => {
+  el.addEventListener("mousemove", (e) => {
+    const r = el.getBoundingClientRect();
+    gsap.to(el, {
+      x: (e.clientX - (r.left + r.width / 2)) * 0.18,
+      y: (e.clientY - (r.top + r.height / 2)) * 0.18,
+      duration: 0.4,
+      ease: "power3.out",
+    });
+  });
+  el.addEventListener("mouseleave", () =>
+    gsap.to(el, { x: 0, y: 0, duration: 1.1, ease: "elastic.out(1, 0.3)" })
+  );
+});
+
+/* ── FAQ accordion ── */
+document.querySelectorAll(".faq-item").forEach((item) => {
+  const btn = item.querySelector(".faq-trigger");
+  const body = item.querySelector(".faq-content");
+  const icon = item.querySelector(".faq-icon");
+  let open = false;
+  btn.addEventListener("click", () => {
+    open = !open;
+    gsap.to(body, {
+      height: open ? "auto" : 0,
+      duration: 0.45,
+      ease: "power3.inOut",
+    });
+    icon.setAttribute(
+      "icon",
+      open ? "solar:minus-circle-linear" : "solar:add-circle-linear"
+    );
+  });
+});
+
+/* ── 3-layer cursor ── */
+if (window.matchMedia("(pointer: fine)").matches) {
+  const dot = document.getElementById("c-dot");
+  const ring = document.getElementById("c-ring");
+  const label = document.getElementById("c-label");
+
+  const dx = gsap.quickTo(dot, "x", { duration: 0.12, ease: "power3" });
+  const dy = gsap.quickTo(dot, "y", { duration: 0.12, ease: "power3" });
+  const rx = gsap.quickTo(ring, "x", { duration: 0.42, ease: "power3" });
+  const ry = gsap.quickTo(ring, "y", { duration: 0.42, ease: "power3" });
+  const lx = gsap.quickTo(label, "x", { duration: 0.3, ease: "power3" });
+  const ly = gsap.quickTo(label, "y", { duration: 0.3, ease: "power3" });
+
+  window.addEventListener("mousemove", (e) => {
+    dx(e.clientX); dy(e.clientY);
+    rx(e.clientX); ry(e.clientY);
+    lx(e.clientX); ly(e.clientY);
+  });
+
+  document.querySelectorAll("[data-cursor]").forEach((el) => {
+    el.addEventListener("mouseenter", () => {
+      label.textContent = el.getAttribute("data-cursor");
+      gsap.to(label, { autoAlpha: 1, duration: 0.25 });
+      gsap.to(ring, { scale: 1.7, borderColor: "rgba(253,186,116,0.25)", duration: 0.35 });
+    });
+    el.addEventListener("mouseleave", () => {
+      gsap.to(label, { autoAlpha: 0, duration: 0.2 });
+      gsap.to(ring, { scale: 1, borderColor: "rgba(253,186,116,0.6)", duration: 0.35 });
+    });
+  });
+}
+</script>
+
+<!-- ── WebGL aura: THREE.Points with additive blending ── -->
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from "three";
+
+const canvas = document.getElementById("aura");
+const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.z = 14;
+
+const COUNT = 2600;
+const positions = new Float32Array(COUNT * 3);
+const colors = new Float32Array(COUNT * 3);
+const warm = new THREE.Color("#ffb366");
+const deep = new THREE.Color("#7a3c12");
+
+for (let i = 0; i < COUNT; i++) {
+  // spherical shell with a soft inward falloff reads better than a filled ball
+  const r = 6 + Math.pow(Math.random(), 0.6) * 6;
+  const theta = Math.random() * Math.PI * 2;
+  const phi = Math.acos(2 * Math.random() - 1);
+  positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+  positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta) * 0.55;
+  positions[i * 3 + 2] = r * Math.cos(phi);
+
+  const c = deep.clone().lerp(warm, Math.random());
+  colors[i * 3] = c.r;
+  colors[i * 3 + 1] = c.g;
+  colors[i * 3 + 2] = c.b;
+}
+
+const geometry = new THREE.BufferGeometry();
+geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+
+const points = new THREE.Points(
+  geometry,
+  new THREE.PointsMaterial({
+    size: 0.055,
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.85,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  })
+);
+scene.add(points);
+
+let mx = 0, my = 0;
+window.addEventListener("mousemove", (e) => {
+  mx = (e.clientX / window.innerWidth - 0.5) * 0.6;
+  my = (e.clientY / window.innerHeight - 0.5) * 0.6;
+});
+
+const clock = new THREE.Clock();
+function frame() {
+  const t = clock.getElapsedTime();
+  points.rotation.y = t * 0.04;
+  points.rotation.x = Math.sin(t * 0.12) * 0.08;
+  camera.position.x += (mx * 2 - camera.position.x) * 0.03;
+  camera.position.y += (-my * 2 - camera.position.y) * 0.03;
+  camera.lookAt(0, 0, 0);
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+frame();
+
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+
+</body>
+</html>
